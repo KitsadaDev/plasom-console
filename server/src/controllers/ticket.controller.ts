@@ -1,0 +1,751 @@
+import { Request, Response, NextFunction } from "express";
+import { prisma } from "../lib/prisma";
+import {
+  createTicketSchema,
+  createMessageSchema,
+  trackingCodeSchema,
+} from "../validations/ticket.validation";
+import { AuthRequest } from "../middleware/auth";
+import { TicketStatus } from "@prisma/client";
+import crypto from "crypto";
+import path from "path";
+import fs from "fs";
+
+// ===========================
+// nanoid: ตัวพิมพ์ใหญ่ + ตัวเลข 4 ตัว
+// ===========================
+const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const nanoid = (length = 4): string => {
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += CODE_ALPHABET[crypto.randomInt(0, CODE_ALPHABET.length)];
+  }
+  return result;
+};
+
+// ===========================
+// สร้างรหัสติดตาม CC-YYYYMMDD-XXXX
+// สุ่มใหม่จนกว่าจะไม่ซ้ำ ถ้าชนครบทุกรอบจะ throw (ห้ามคืนรหัสที่ซ้ำ)
+// ===========================
+const MAX_CODE_ATTEMPTS = 10;
+
+export async function generateUniqueCode(): Promise<string> {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+
+  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+    const code = `CC-${y}${m}${d}-${nanoid()}`;
+    const exists = await prisma.ticket.findUnique({ where: { trackingCode: code } });
+    if (!exists) return code;
+  }
+
+  throw new Error("ไม่สามารถสร้างรหัสติดตามที่ไม่ซ้ำได้ กรุณาลองใหม่");
+}
+
+// ===========================
+// ลบไฟล์ที่ multer เขียนลงดิสก์ไปแล้ว (ใช้เมื่อสร้างเคสไม่สำเร็จ ไม่ให้ไฟล์ค้าง)
+// ===========================
+async function removeUploadedFiles(files: Express.Multer.File[]): Promise<void> {
+  await Promise.all(
+    files.map(async (f) => {
+      try {
+        if (f.path) await fs.promises.unlink(f.path);
+      } catch {
+        // ไฟล์อาจถูกลบไปแล้ว ไม่ต้องทำอะไร
+      }
+    })
+  );
+}
+
+// ===========================
+// ฟังก์ชัน mask เบอร์โทร 08x-xxx-1234
+// ===========================
+function maskPhone(phone: string): string {
+  return `${phone.slice(0, 3)}-xxx-${phone.slice(-4)}`;
+}
+
+// ===========================
+// POST /api/tickets
+// สร้างเคสใหม่ (multipart/form-data รองรับรูปสูงสุด 3 รูป)
+// ===========================
+export async function createTicket(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  // รูปที่อัปโหลด (multer ใส่ไว้ใน req.files) — อยู่นอก try เพื่อลบทิ้งได้เมื่อเกิด error
+  const files = (req.files as Express.Multer.File[]) ?? [];
+
+  try {
+    // Parse และ validate ข้อมูล (form-data ส่งเป็น string ทั้งหมด)
+    const rawBody = {
+      ...req.body,
+      lat: req.body.lat ? parseFloat(req.body.lat as string) : undefined,
+      lng: req.body.lng ? parseFloat(req.body.lng as string) : undefined,
+    };
+
+    const data = createTicketSchema.parse(rawBody);
+
+    const imageUrls = files.map((f) => {
+      if (f.buffer) {
+        return `data:${f.mimetype};base64,${f.buffer.toString("base64")}`;
+      }
+      return `/uploads/${f.filename}`;
+    });
+
+    // สร้าง trackingCode ที่ไม่ซ้ำ
+    const trackingCode = await generateUniqueCode();
+
+    // สร้าง Ticket + StatusLog แรก ใน transaction เดียว
+    const ticket = await prisma.$transaction(async (tx) => {
+      const t = await tx.ticket.create({
+        data: {
+          trackingCode,
+          service: data.service,
+          brand: data.brand,
+          symptom: data.symptom,
+          address: data.address,
+          lat: data.lat,
+          lng: data.lng,
+          preferredDate: new Date(data.preferredDate),
+          note: data.note,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          userId: req.user?.id, // แนบ userId ถ้าล็อกอินอยู่
+          images: {
+            create: imageUrls.map((url) => ({ url })),
+          },
+        },
+        include: { images: true },
+      });
+
+      // สร้าง StatusLog แรก (SUBMITTED)
+      await tx.statusLog.create({
+        data: {
+          ticketId: t.id,
+          status: TicketStatus.SUBMITTED,
+          note: "ส่งเรื่องผ่านเว็บไซต์",
+        },
+      });
+
+      return t;
+    });
+
+    // ส่งข้อมูลเคสครบ (หน้ายืนยันของ client ต้องใช้แสดงสรุป) พร้อมรหัสติดตาม
+    res.status(201).json({
+      success: true,
+      data: {
+        ...ticket,
+        message: "ส่งเรื่องสำเร็จ กรุณาบันทึกรหัสติดตามของท่าน",
+      },
+    });
+  } catch (err) {
+    // สร้างเคสไม่สำเร็จ → ลบรูปที่ถูกอัปโหลดไปแล้วไม่ให้ค้างในดิสก์
+    await removeUploadedFiles(files);
+    next(err);
+  }
+}
+
+// ===========================
+// GET /api/tickets/:code
+// ดูเคสตามรหัสติดตาม (ไม่ต้อง login)
+// ===========================
+export async function getTicketByCode(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { code } = req.params;
+
+    // Validate รูปแบบรหัสติดตามเพื่อป้องกัน arbitrary query / code injection
+    const codeValidation = trackingCodeSchema.safeParse(code);
+    if (!codeValidation.success) {
+      res.status(400).json({ success: false, error: "รูปแบบรหัสติดตามไม่ถูกต้อง" });
+      return;
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { trackingCode: code },
+      include: {
+        images: { select: { id: true, url: true } },
+        statusLogs: { orderBy: { createdAt: "asc" } },
+        technician: { select: { id: true, name: true, phone: true, area: true } },
+      },
+    });
+
+    if (!ticket) {
+      res.status(404).json({ success: false, error: "ไม่พบรหัสติดตามนี้ในระบบ" });
+      return;
+    }
+
+    // ตัด userId ออกจาก public response เพื่อไม่ให้เปิดเผยรหัสผู้ใช้ภายใน
+    const { userId: _omittedUserId, ...safeTicket } = ticket;
+
+    // ปิดบังเบอร์โทรบางส่วน
+    res.json({
+      success: true,
+      data: {
+        ...safeTicket,
+        customerPhone: maskPhone(ticket.customerPhone),
+        // ปิดบังเบอร์ช่างด้วย
+        technician: ticket.technician
+          ? { ...ticket.technician, phone: maskPhone(ticket.technician.phone) }
+          : null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ===========================
+// GET /api/tickets/:code/messages
+// ดูข้อความแชตของเคส (ไม่ต้อง login)
+// ===========================
+export async function getMessages(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { code } = req.params;
+
+    const codeValidation = trackingCodeSchema.safeParse(code);
+    if (!codeValidation.success) {
+      res.status(400).json({ success: false, error: "รูปแบบรหัสติดตามไม่ถูกต้อง" });
+      return;
+    }
+
+    // ตรวจสอบว่าเคสมีอยู่จริง
+    const ticket = await prisma.ticket.findUnique({
+      where: { trackingCode: code },
+      select: { id: true },
+    });
+
+    if (!ticket) {
+      res.status(404).json({ success: false, error: "ไม่พบรหัสติดตามนี้ในระบบ" });
+      return;
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { ticketId: ticket.id },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        text: true,
+        fromStaff: true,
+        createdAt: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ===========================
+// POST /api/tickets/:code/messages
+// ลูกค้าส่งข้อความ (fromStaff = false)
+// ===========================
+export async function createCustomerMessage(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { code } = req.params;
+
+    const codeValidation = trackingCodeSchema.safeParse(code);
+    if (!codeValidation.success) {
+      res.status(400).json({ success: false, error: "รูปแบบรหัสติดตามไม่ถูกต้อง" });
+      return;
+    }
+
+    const data = createMessageSchema.parse(req.body);
+
+    // ตรวจสอบว่าเคสมีอยู่จริง
+    const ticket = await prisma.ticket.findUnique({
+      where: { trackingCode: code },
+      select: { id: true, status: true },
+    });
+
+    if (!ticket) {
+      res.status(404).json({ success: false, error: "ไม่พบรหัสติดตามนี้ในระบบ" });
+      return;
+    }
+
+    // เคสที่ยกเลิกหรือสำเร็จแล้วไม่สามารถส่งข้อความได้
+    if (ticket.status === TicketStatus.CANCELLED || ticket.status === TicketStatus.COMPLETED) {
+      res.status(400).json({ success: false, error: "ไม่สามารถส่งข้อความได้ เคสนี้ปิดแล้ว" });
+      return;
+    }
+
+    const message = await prisma.message.create({
+      data: {
+        ticketId: ticket.id,
+        text: data.text,
+        fromStaff: false,
+        userId: req.user?.id,
+      },
+      select: {
+        id: true,
+        text: true,
+        fromStaff: true,
+        createdAt: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+
+    res.status(201).json({ success: true, data: message });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ===========================
+// GET /api/tickets/my - ดึงงานซ่อมของลูกค้าที่ล็อกอินอยู่
+// ===========================
+export const getMyTickets = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id
+    const userPhone = req.user?.phone
+
+    if (!userId && !userPhone) {
+      return res.status(401).json({ success: false, error: 'กรุณาเข้าสู่ระบบก่อน' })
+    }
+
+    // ค้นหาทั้งจาก userId และเบอร์โทรศัพท์ (ครอบคลุมทั้งเคสสมัครใหม่และเบอร์ตรงกัน)
+    const tickets = await prisma.ticket.findMany({
+      where: {
+        OR: [
+          ...(userId ? [{ userId }] : []),
+          ...(userPhone ? [{ customerPhone: userPhone }] : []),
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        technician: true,
+        images: true,
+        statusLogs: { orderBy: { createdAt: 'desc' } },
+      },
+    })
+
+    return res.json({ success: true, data: tickets })
+  } catch (error) {
+    console.error('getMyTickets error:', error)
+    return res.status(500).json({ success: false, error: 'ไม่สามารถดึงข้อมูลประวัติการแจ้งซ่อมได้' })
+  }
+}
+
+
+// ===========================
+// Helper แปลงคำอ่านตัวเลขไทยและคำว่า "ทับ" ในบ้านเลขที่/วันที่ ให้เป็นเลขอารบิก
+// ===========================
+function normalizeThaiSpokenNumbers(input: string): string {
+  const thaiDigits = "๐๑๒๓๔๕๖๗๘๙";
+  const unitMap: Record<string, string> = {
+    ศูนย์: "0", หนึ่ง: "1", เอ็ด: "1", สอง: "2", ยี่: "2",
+    สาม: "3", สี่: "4", ห้า: "5", หก: "6", เจ็ด: "7", แปด: "8", เก้า: "9",
+  };
+
+  let out = input.replace(/[๐-๙]/g, (d) => String(thaiDigits.indexOf(d)));
+
+  // แปลงหลักสิบ เช่น สิบสี่ -> 14, ยี่สิบเอ็ด -> 21, สามสิบ -> 30
+  out = out.replace(
+    /(ยี่|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า)?สิบ(เอ็ด|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า)?/g,
+    (_match, tens, unit) => {
+      const t = tens ? unitMap[tens] : "1";
+      const u = unit ? unitMap[unit] : "0";
+      return `${t}${u}`;
+    }
+  );
+
+  // แปลงตัวเลขเดี่ยว เช่น ศูนย์ ศูนย์ หนึ่ง -> 0 0 1
+  out = out.replace(
+    /(ศูนย์|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า)/g,
+    (m) => unitMap[m] ?? m
+  );
+
+  // รวมตัวเลขที่เว้นวรรคติดกัน (เช่น 0 0 1 -> 001) และแปลงคำว่า "ทับ" ระหว่างตัวเลขเป็น "/"
+  out = out.replace(/(\d)\s+(?=\d)/g, "$1");
+  out = out.replace(/(\d)\s*(?=\d)/g, "$1");
+  out = out.replace(/(\d)\s*ทับ\s*(\d)/g, "$1/$2");
+
+  return out;
+}
+
+
+
+
+
+// ===========================
+// POST /api/tickets/botnoi-webhook
+// รับข้อมูลแจ้งซ่อมจาก Botnoi AI Agent (<customer_name>, <phone>, <info>, <date>, <ticket>)
+// ===========================
+// ===========================
+// Helper แปลงวันที่จากแชทบอท (รองรับทั้ง YYYY-MM-DD และภาษาไทย เช่น "7 กันยายน 2570")
+// ===========================
+function parseBotnoiDate(raw: string): Date {
+  const fallback = new Date(Date.now() + 86400000);
+  if (!raw) return fallback;
+
+  const text = normalizeThaiSpokenNumbers(raw.trim());
+
+  // 1. กรณีส่งมาเป็น YYYY-MM-DD
+  const isoMatch = text.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    let year = parseInt(isoMatch[1], 10);
+    if (year > 2400) year -= 543; // แปลง พ.ศ. เป็น ค.ศ.
+    const month = String(isoMatch[2]).padStart(2, "0");
+    const day = String(isoMatch[3]).padStart(2, "0");
+    const d = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // 2. กรณีส่งมาเป็นภาษาไทย เช่น "วันที่ 7 กันยายน 2570" หรือ "7 ก.ย. 70"
+  const thaiMonths: Record<string, number> = {
+    มกรา: 1, "ม.ค": 1, กุมภา: 2, "ก.พ": 2, มีนา: 3, "มี.ค": 3,
+    เมษา: 4, "เม.ย": 4, พฤษภา: 5, "พ.ค": 5, มิถุนา: 6, "มิ.ย": 6,
+    กรกฎา: 7, "ก.ค": 7, สิงหา: 8, "ส.ค": 8, กันยา: 9, "ก.ย": 9,
+    ตุลา: 10, "ต.ค": 10, พฤศจิกา: 11, "พ.ย": 11, ธันวา: 12, "ธ.ค": 12,
+  };
+
+  for (const [key, mNum] of Object.entries(thaiMonths)) {
+    if (text.includes(key)) {
+      const nums = text.match(/\d+/g)?.map(Number) || [];
+      const day = nums.find((n) => n >= 1 && n <= 31) || new Date().getDate();
+      let year = nums.find((n) => n >= 67 && n <= 2600) || new Date().getFullYear();
+      if (year < 100) year += 2500; // เช่น "ปี 70" -> 2570
+      if (year > 2400) year -= 543; // แปลง พ.ศ. เป็น ค.ศ.
+      const monthStr = String(mNum).padStart(2, "0");
+      const dayStr = String(day).padStart(2, "0");
+      const d = new Date(`${year}-${monthStr}-${dayStr}T00:00:00.000Z`);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  const parsed = new Date(text);
+  return isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+// ===========================
+// Helper แยก อุปกรณ์(brand), อาการเสีย(symptom), และที่อยู่(address) ออกจาก <info>
+// ===========================
+function parseBotnoiInfo(rawInfo: string): {
+  brand: string;
+  symptom: string;
+  address: string;
+} {
+  const text = normalizeThaiSpokenNumbers(rawInfo.trim());
+
+  // 1. กรณีบอทส่งมาคั่นด้วย | เช่น "PS4 | เปิดไม่ติด | backroom"
+  if (text.includes("|")) {
+    const parts = text.split("|").map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 3) {
+      return {
+        brand: parts[0],
+        symptom: parts[1],
+        address: parts.slice(2).join(" "),
+      };
+    }
+    if (parts.length === 2) {
+      return {
+        brand: "แจ้งผ่าน AI Chatbot",
+        symptom: parts[0],
+        address: parts[1],
+      };
+    }
+  }
+
+  // 2. กรณีบอทเขียนรวมกัน เช่น "PS4 เปิดไม่ติด, ที่อยู่หน้างาน: backroom" หรือ "อยู่ที่ ..."
+  const addrRegex = /(?:,|\s)*(?:ที่อยู่หน้างาน|ที่อยู่|สถานที่|อยู่ที่)\s*[:：]?\s*(.+)$/i;
+  const match = text.match(addrRegex);
+  if (match && match.index !== undefined) {
+    const symptomPart = text.slice(0, match.index).replace(/[,\s]+$/, "").trim();
+    const addressPart = match[1].trim();
+    return {
+      brand: "แจ้งผ่าน AI Chatbot",
+      symptom: symptomPart || text,
+      address: addressPart || "-",
+    };
+  }
+
+  // 3. Fallback กรณีไม่มีคำบอกที่อยู่ชัดเจน
+  return {
+    brand: "แจ้งผ่าน AI Chatbot",
+    symptom: text,
+    address: "ตามที่แจ้งในแชทบอท",
+  };
+}
+
+
+
+
+// ===========================
+// POST /api/tickets/botnoi-webhook
+// ===========================
+export async function createTicketFromBotnoi(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { customer_name, phone, info, date, ticket: botTicketCode } = req.body || {};
+
+    const isPlaceholder = (val: unknown) =>
+      !val || String(val).includes("<") || String(val).includes(">");
+
+    const cleanName = isPlaceholder(customer_name)
+      ? "ลูกค้าแจ้งผ่าน AI Chatbot"
+      : String(customer_name).trim();
+
+    const digitsOnly = String(phone || "").replace(/\D/g, "").slice(0, 10);
+    const hasRealPhone = digitsOnly.length === 10;
+    const cleanPhone = hasRealPhone ? digitsOnly : `08${"0".repeat(8)}`;
+
+    const cleanInfo = isPlaceholder(info)
+      ? "แจ้งซ่อมผ่านแชทบอท Plasom"
+      : String(info).trim();
+
+    // แยก brand, symptom, address ไม่ให้ทับกัน
+    const { brand, symptom, address } = parseBotnoiInfo(cleanInfo);
+
+    // ตรวจสอบประเภทบริการอัตโนมัติจากสิ่งที่ลูกค้าแจ้งในแชท
+    const detectedService = /ล้าง|ทำความสะอาด/.test(cleanInfo)
+      ? "CLEANING"
+      : /ติดตั้ง|ย้ายแอร์|ย้ายจุด|ติดแอร์/.test(cleanInfo)
+      ? "INSTALLATION"
+      : "REPAIR";
+
+    // ดึงรหัส CC-YYYYMMDD-XXXX ที่บอทแนบมาใน <date> หรือ <ticket> หรือ <info>
+    const combinedRaw = `${botTicketCode || ""} ${date || ""} ${info || ""}`;
+    const [matchedCode] = combinedRaw.match(/(CC-[0-9]{8}-[A-Z0-9]{4,}|TCK-[A-Z0-9-]+)/i) ?? [];
+    const botCode = matchedCode ? matchedCode.toUpperCase() : null;
+
+
+    // ===========================
+    // ด่านที่ 1: ถ้ารหัสใบงานที่บอทส่งมามีอยู่แล้ว และเป็นของเบอร์เดียวกันหรือเพิ่งสร้างไม่เกิน 2 นาที
+    // แปลว่าบอทยิงซ้ำจากสายสนทนาเดิม -> คืนใบงานเดิมกลับไปทันที ห้ามสุ่มรหัสใหม่มาสร้างซ้ำ
+    // ===========================
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+
+    if (botCode) {
+      const existingByCode = await prisma.ticket.findUnique({
+        where: { trackingCode: botCode },
+      });
+
+      if (
+        existingByCode &&
+        (existingByCode.customerPhone === cleanPhone || existingByCode.createdAt >= twoMinutesAgo)
+      ) {
+        res.status(200).json({
+          success: true,
+          trackingCode: existingByCode.trackingCode,
+          message: `บันทึกใบงานสำเร็จ รหัสติดตามงานซ่อมคือ ${existingByCode.trackingCode}`,
+          data: existingByCode,
+        });
+        return;
+      }
+    }
+
+    // ===========================
+    // ด่านที่ 2: ป้องกัน AI เผลอสุ่มรหัสใหม่แล้วยิงซ้ำตอนลูกค้าพูดขอบคุณ/บอกลา (ภายใน 2 นาที)
+    // ===========================
+    const recentDuplicate = await prisma.ticket.findFirst({
+      where: {
+        service: detectedService,
+        createdAt: { gte: twoMinutesAgo },
+        ...(hasRealPhone
+          ? { customerPhone: cleanPhone }
+          : { customerName: cleanName, symptom }),
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (recentDuplicate) {
+      res.status(200).json({
+        success: true,
+        trackingCode: recentDuplicate.trackingCode,
+        message: `บันทึกใบงานสำเร็จ รหัสติดตามงานซ่อมคือ ${recentDuplicate.trackingCode}`,
+        data: recentDuplicate,
+      });
+      return;
+    }
+
+    // ตัดรหัส CC-... ออกจากข้อความวันที่ เพื่อให้เหลือแต่วันที่สะอาดๆ
+    const rawDateOnly = !isPlaceholder(date)
+      ? String(date)
+          .replace(/\|?\s*(CC-[0-9]{8}-[A-Z0-9]{4,}|TCK-[A-Z0-9-]+)/gi, "")
+          .trim()
+      : "";
+
+    const cleanDateText = rawDateOnly || "ตามนัดหมายในแชท";
+
+    // แปลงวันที่นัดหมายด้วย parseBotnoiDate
+    const preferredDate = rawDateOnly
+      ? parseBotnoiDate(rawDateOnly)
+      : new Date(Date.now() + 86400000);
+
+    // ใช้รหัสเดียวกับที่บอทสร้างในแชท (สุ่มใหม่เฉพาะกรณีชนกับเคสเก่าของคนอื่นจริงๆ เท่านั้น)
+    let trackingCode = botCode || (await generateUniqueCode());
+
+    const existing = await prisma.ticket.findUnique({ where: { trackingCode } });
+    if (existing) {
+      trackingCode = await generateUniqueCode();
+    }
+
+    const createdTicket = await prisma.$transaction(async (tx) => {
+      const t = await tx.ticket.create({
+        data: {
+          trackingCode,
+          service: detectedService,
+          brand,
+          symptom,
+          address,
+          preferredDate,
+          note: `เวลานัดที่ลูกค้าแจ้งในแชท: ${cleanDateText}`,
+          customerName: cleanName,
+          customerPhone: cleanPhone,
+        },
+      });
+
+      await tx.statusLog.create({
+        data: {
+          ticketId: t.id,
+          status: TicketStatus.SUBMITTED,
+          note: "รับเรื่องอัตโนมัติผ่าน Plasom AI Agent (Botnoi.ai)",
+        },
+      });
+
+      return t;
+    });
+
+    res.status(201).json({
+      success: true,
+      trackingCode: createdTicket.trackingCode,
+      message: `บันทึกใบงานสำเร็จ รหัสติดตามงานซ่อมคือ ${createdTicket.trackingCode}`,
+      data: createdTicket,
+    });
+  } catch (err) {
+    console.error("❌ [Botnoi Webhook Error]:", err);
+    next(err);
+  }
+}
+
+
+// ===========================
+// GET /api/tickets/tts?text=...
+// ดึงเสียงผู้หญิงภาษาไทยธรรมชาติ (Google Thai Female TTS) ส่งกลับเป็น MP3
+// ===========================
+export async function getThaiFemaleVoice(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const text = String(req.query.text || "").trim().slice(0, 200);
+    if (!text) {
+      res.status(400).json({ success: false, error: "กรุณาระบุข้อความ" });
+      return;
+    }
+
+    const ttsUrl = `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+      text
+    )}&tl=th&client=tw-ob`;
+
+    const response = await fetch(ttsUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
+    });
+
+    if (!response.ok) {
+      res.status(502).json({ success: false, error: "ไม่สามารถสร้างเสียงพูดได้" });
+      return;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(arrayBuffer));
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+// ===========================
+// POST /api/tickets/voicebot-token
+// ขอ ephemeral_token ชั่วคราวจาก Botnoi Voicebot เพื่อให้หน้าเว็บคุยสดผ่าน WSS
+// ===========================
+export async function createVoicebotCallToken(
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const accessToken = process.env.BOTNOI_VOICEBOT_ACCESS_TOKEN?.trim();
+    const agentId = (process.env.BOTNOI_VOICEBOT_AGENT_ID || "agt_393eec992097").trim();
+    const mintUrl = (
+      process.env.BOTNOI_VOICEBOT_MINT_URL ||
+      "https://backend-voicebot-stg.botnoigroup.com/call/tokens"
+    ).trim();
+    const wsUrl = (
+      process.env.BOTNOI_VOICEBOT_WS_URL ||
+      "wss://voicebot-serverless-stg.botnoigroup.com/v1/call"
+    ).trim();
+
+    if (!accessToken) {
+      res.status(500).json({
+        success: false,
+        error: "ยังไม่ได้ตั้งค่า BOTNOI_VOICEBOT_ACCESS_TOKEN บนเซิร์ฟเวอร์",
+      });
+      return;
+    }
+
+    const response = await fetch(mintUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        agent_id: agentId,
+        channel: "web",
+      }),
+    });
+
+    const body = (await response.json().catch(() => ({}))) as {
+      ephemeral_token?: string;
+      session_id?: string | null;
+      detail?: string;
+    };
+
+    if (!response.ok || typeof body.ephemeral_token !== "string") {
+      const reason =
+        response.status === 401
+          ? "โทเคนฝั่งเซิร์ฟเวอร์หมดอายุหรือไม่ถูกต้อง กรุณาอัปเดตค่าจากหน้า Developers"
+          : body.detail || `HTTP ${response.status}`;
+      res.status(502).json({
+        success: false,
+        error: `ไม่สามารถขอสิทธิ์เชื่อมต่อ Voicebot ได้ (${reason})`,
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ephemeralToken: body.ephemeral_token,
+        wsUrl,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
