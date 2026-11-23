@@ -213,22 +213,33 @@ export const MOCK_REVIEWS: SatisfactionItem[] = [
   { id: 'rv-3', projectId: 'proj-car-somchai', customerName: 'คุณนภัส', ticketCode: 'CAR-3012', rating: 5, comment: 'แจ้งอาการไว้ก่อน พอถึงอู่ช่างเตรียมอะไหล่รอไว้ให้เลย สะดวกมากครับ', createdAt: '2026-11-22' },
 ];
 
-const STORAGE_KEY = 'plasom_console_v2_projects';
+function getStorageKey(userId?: string): string {
+  return `plasom_console_v2_projects_${userId || 'guest'}`;
+}
 
-export function loadProjects(): ProjectItem[] {
+export function loadProjects(userId?: string): ProjectItem[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_PROJECTS;
+    const raw = localStorage.getItem(getStorageKey(userId));
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_PROJECTS;
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return INITIAL_PROJECTS;
+    return [];
   }
 }
 
-export function saveNewProject(project: ProjectItem): ProjectItem[] {
-  const current = loadProjects();
+export function saveNewProject(project: ProjectItem, userId?: string): ProjectItem[] {
+  const current = loadProjects(userId);
   const updated = [project, ...current];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  localStorage.setItem(getStorageKey(userId), JSON.stringify(updated));
   return updated;
+}
+
+export function loadDemoProjectsForUser(userId?: string): ProjectItem[] {
+  const cloned = INITIAL_PROJECTS.map((p) => ({
+    ...p,
+    id: `${p.id}-${(userId || 'demo').slice(0, 6)}`,
+  }));
+  localStorage.setItem(getStorageKey(userId), JSON.stringify(cloned));
+  return cloned;
 }

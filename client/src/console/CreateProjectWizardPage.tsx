@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { BotFeatures, ProjectItem, saveNewProject } from './mockConsoleData';
+import { useAuth } from '../context/AuthContext';
+
 
 const CATEGORY_PRESETS: Record<string, string[]> = {
   'งานแอร์และเครื่องทำความเย็น': ['ยี่ห้อแอร์', 'ขนาด BTU', 'อาการเสีย', 'ที่อยู่หน้างาน', 'วันนัดหมาย'],
@@ -11,6 +13,7 @@ const CATEGORY_PRESETS: Record<string, string[]> = {
 
 export function CreateProjectWizardPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
   const [name, setName] = useState('');
@@ -68,7 +71,7 @@ export function CreateProjectWizardPage() {
       createdAt: '2026-11-23',
     };
 
-    saveNewProject(newProj);
+    saveNewProject(newProj, user?.id);
     navigate(`/projects/${newId}`);
   };
 
