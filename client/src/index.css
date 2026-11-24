@@ -5,10 +5,52 @@
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   --animate-float: float 6s ease-in-out infinite;
+  --animate-float-delayed: float 7.5s ease-in-out 1.8s infinite;
   --animate-pulse-slow: pulse-slow 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-shimmer: shimmer 2.5s linear infinite;
-  --animate-marquee: marquee 28s linear infinite;
+  --animate-marquee: marquee 32s linear infinite;
   --animate-ripple-expand: ripple-expand 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-aurora: aurora-drift 16s ease-in-out infinite alternate;
+  --animate-border-beam: border-beam-spin 6s linear infinite;
+  --animate-beam-flow: beam-flow 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-4%, -2%, 0) scale(1) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(3%, 4%, 0) scale(1.08) rotate(2deg);
+  }
+  100% {
+    transform: translate3d(-2%, 2%, 0) scale(0.96) rotate(-2deg);
+  }
+}
+
+@keyframes border-beam-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes beam-flow {
+  0% {
+    stroke-dashoffset: 240;
+    opacity: 0.2;
+  }
+  35% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    stroke-dashoffset: -240;
+    opacity: 0.15;
+  }
 }
 
 @keyframes float {
@@ -130,12 +172,20 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #f4f4f5;
+  background: #0b0f19;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
+  background: #1e293b;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #a1a1aa;
+  background: #334155;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
