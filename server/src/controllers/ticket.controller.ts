@@ -3,10 +3,12 @@ import { prisma } from "../lib/prisma";
 import {
   createTicketSchema,
   createMessageSchema,
+  ticketExtraFieldsSchema,
   trackingCodeSchema,
 } from "../validations/ticket.validation";
 import { AuthRequest } from "../middleware/auth";
 import { TicketStatus } from "@prisma/client";
+import { verifyProjectWebhookSecret } from "../lib/projectWebhook";
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
@@ -111,6 +113,7 @@ export async function createTicket(
           lng: data.lng,
           preferredDate: new Date(data.preferredDate),
           note: data.note,
+          extraFields: data.extraFields,
           customerName: data.customerName,
           customerPhone: data.customerPhone,
           userId: req.user?.id, // แนบ userId ถ้าล็อกอินอยู่
@@ -237,6 +240,7 @@ export async function getMessages(
         id: true,
         text: true,
         fromStaff: true,
+        sender: true,
         createdAt: true,
         user: { select: { id: true, name: true } },
       },
@@ -290,12 +294,14 @@ export async function createCustomerMessage(
         ticketId: ticket.id,
         text: data.text,
         fromStaff: false,
+        sender: "CUSTOMER",
         userId: req.user?.id,
       },
       select: {
         id: true,
         text: true,
         fromStaff: true,
+        sender: true,
         createdAt: true,
         user: { select: { id: true, name: true } },
       },
@@ -494,8 +500,45 @@ export async function createTicketFromBotnoi(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  await handleBotnoiTicket(req, res, next);
+}
+
+export async function createProjectTicketFromBotnoi(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  await handleBotnoiTicket(req, res, next, req.params.projectId);
+}
+
+async function handleBotnoiTicket(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  projectId?: string
+): Promise<void> {
   try {
-    const { customer_name, phone, info, date, ticket: botTicketCode } = req.body || {};
+    if (projectId) {
+      const verified = await verifyProjectWebhookSecret(projectId, req.header("x-webhook-secret"));
+      if (verified === null) {
+        res.status(404).json({ success: false, error: "ไม่พบร้านค้าที่ระบุ" });
+        return;
+      }
+      if (!verified) {
+        res.status(401).json({ success: false, error: "Webhook secret ไม่ถูกต้อง" });
+        return;
+      }
+    }
+
+    const {
+      customer_name,
+      phone,
+      info,
+      date,
+      ticket: botTicketCode,
+      extra_fields: rawExtraFields,
+    } = req.body || {};
+    const extraFields = ticketExtraFieldsSchema.parse(rawExtraFields ?? {});
 
     const isPlaceholder = (val: unknown) =>
       !val || String(val).includes("<") || String(val).includes(">");
@@ -541,6 +584,9 @@ export async function createTicketFromBotnoi(
 
       if (
         existingByCode &&
+        (projectId
+          ? existingByCode.projectId === projectId
+          : existingByCode.projectId === null) &&
         (existingByCode.customerPhone === cleanPhone || existingByCode.createdAt >= twoMinutesAgo)
       ) {
         res.status(200).json({
@@ -558,6 +604,7 @@ export async function createTicketFromBotnoi(
     // ===========================
     const recentDuplicate = await prisma.ticket.findFirst({
       where: {
+        projectId: projectId ?? null,
         service: detectedService,
         createdAt: { gte: twoMinutesAgo },
         ...(hasRealPhone
@@ -603,12 +650,14 @@ export async function createTicketFromBotnoi(
       const t = await tx.ticket.create({
         data: {
           trackingCode,
+          projectId,
           service: detectedService,
           brand,
           symptom,
           address,
           preferredDate,
           note: `เวลานัดที่ลูกค้าแจ้งในแชท: ${cleanDateText}`,
+          extraFields,
           customerName: cleanName,
           customerPhone: cleanPhone,
         },

@@ -13,6 +13,8 @@ import { optionalAuth } from "./middleware/auth";
 import authRouter from "./routes/auth";
 import ticketRouter from "./routes/tickets";
 import adminRouter from "./routes/admin";
+import projectRouter from "./routes/projects";
+import webhookRouter from "./routes/webhooks";
 import { getTechnicians } from "./controllers/admin.controller";
 
 const app = express();
@@ -105,6 +107,8 @@ app.get("/api/health", (_req, res) => {
 app.use("/api/auth", authRouter);
 app.use("/api/tickets", ticketRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/projects", projectRouter);
+app.use("/api/webhooks", webhookRouter);
 
 // GET /api/technicians (public - สำหรับ booking form เลือกพื้นที่ แต่ mask เบอร์โทรถ้าไม่ใช่ staff)
 app.get("/api/technicians", optionalAuth, getTechnicians);
