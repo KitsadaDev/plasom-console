@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ClipboardList,
@@ -20,17 +20,25 @@ import {
   FolderKanban,
   ArrowLeft,
   Sparkles,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
   loadProjects,
+  saveNewProject,
   MOCK_TICKETS,
   MOCK_THREADS,
   MOCK_REVIEWS,
   MOCK_TECHS,
   type ProjectItem,
 } from './mockConsoleData';
+import {
+  fetchMyProjects,
+  fetchProjectTicketsApi,
+  fetchProjectTechniciansApi,
+  fetchProjectReviewsApi,
+} from './consoleApi';
 import { TicketsTab } from './tabs/TicketsTab';
 import { ConversationsTab } from './tabs/ConversationsTab';
 import { SatisfactionTab } from './tabs/SatisfactionTab';
@@ -59,14 +67,52 @@ export function ConsoleLayout() {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
+  const [projects, setProjects] = useState<ProjectItem[]>(() =>
+    user?.id ? loadProjects(user.id) : []
+  );
+  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [liveCounts, setLiveCounts] = useState<{
+    tickets: number;
+    threads: number;
+    techs: number;
+    avgCsat?: string;
+  } | null>(null);
+
   const switcherRef = useRef<HTMLDivElement>(null);
 
-  const projects = useMemo<ProjectItem[]>(() => {
-    void projectId;
-    return user?.id ? loadProjects(user.id) : [];
-  }, [projectId, user?.id]);
+  useEffect(() => {
+    let cancelled = false;
+    async function syncProjects() {
+      if (!user?.id) {
+        setProjects([]);
+        setLoadingProjects(false);
+        return;
+      }
+      setLoadingProjects(true);
+      try {
+        const dbList = await fetchMyProjects();
+        if (!cancelled && dbList.length > 0) {
+          setProjects(dbList);
+          dbList.forEach((p) => saveNewProject(p, user.id));
+        } else if (!cancelled) {
+          setProjects(loadProjects(user.id));
+        }
+      } catch {
+        if (!cancelled) {
+          setProjects(loadProjects(user.id));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingProjects(false);
+        }
+      }
+    }
+    syncProjects();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
-  // Close project dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) {
@@ -78,6 +124,51 @@ export function ConsoleLayout() {
   }, []);
 
   const currentProject = projects.find((p) => p.id === projectId) || projects[0];
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBadges() {
+      if (!currentProject?.id || currentProject.id.startsWith('proj-')) {
+        setLiveCounts(null);
+        return;
+      }
+      try {
+        const [tks, tchs, rvs] = await Promise.all([
+          fetchProjectTicketsApi(currentProject.id),
+          fetchProjectTechniciansApi(currentProject.id),
+          fetchProjectReviewsApi(currentProject.id),
+        ]);
+        if (!cancelled) {
+          setLiveCounts({
+            tickets: tks.length,
+            threads: tks.length,
+            techs: tchs.length,
+            avgCsat: rvs.length > 0 ? averageRating(rvs) : undefined,
+          });
+        }
+      } catch {
+        if (!cancelled) setLiveCounts(null);
+      }
+    }
+    loadBadges();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id, activeTab]);
+
+  if (loadingProjects && projects.length === 0) {
+    return (
+      <AuroraBackground
+        intensity="medium"
+        className="min-h-screen flex items-center justify-center p-6 text-slate-100 font-sans"
+      >
+        <div className="flex flex-col items-center gap-3 text-slate-300">
+          <Loader2 className="w-8 h-8 animate-spin text-orange-400" />
+          <span className="text-sm">กำลังโหลดข้อมูลร้านค้า...</span>
+        </div>
+      </AuroraBackground>
+    );
+  }
 
   if (!currentProject) {
     return (
@@ -104,20 +195,24 @@ export function ConsoleLayout() {
     );
   }
 
-  // Live metrics badges for navigation tabs (supports demo suffixed project IDs)
-  const ticketsCount = MOCK_TICKETS.filter((t) =>
+  const mockTicketsCount = MOCK_TICKETS.filter((t) =>
     belongsToProject(t.projectId, currentProject.id)
   ).length;
-  const threadsCount = MOCK_THREADS.filter((t) =>
+  const mockThreadsCount = MOCK_THREADS.filter((t) =>
     belongsToProject(t.projectId, currentProject.id)
   ).length;
-  const projectReviews = MOCK_REVIEWS.filter((r) =>
+  const mockProjectReviews = MOCK_REVIEWS.filter((r) =>
     belongsToProject(r.projectId, currentProject.id)
   );
-  const avgCsat = projectReviews.length > 0 ? averageRating(projectReviews) : undefined;
-  const techsCount = MOCK_TECHS.filter((t) =>
+  const mockAvgCsat = mockProjectReviews.length > 0 ? averageRating(mockProjectReviews) : undefined;
+  const mockTechsCount = MOCK_TECHS.filter((t) =>
     belongsToProject(t.projectId, currentProject.id)
   ).length;
+
+  const ticketsCount = liveCounts ? liveCounts.tickets : mockTicketsCount;
+  const threadsCount = liveCounts ? liveCounts.threads : mockThreadsCount;
+  const avgCsat = liveCounts ? liveCounts.avgCsat : mockAvgCsat;
+  const techsCount = liveCounts ? liveCounts.techs : mockTechsCount;
 
   const menuItems: NavMenuItem[] = [
     {
@@ -150,7 +245,7 @@ export function ConsoleLayout() {
     },
   ];
 
-  const webhookUrl = `https://api.plasom-console.app/api/webhooks/${currentProject.id}`;
+  const webhookUrl = `${window.location.origin}/api/webhooks/${currentProject.id}`;
 
   const handleCopyWebhook = async () => {
     try {
@@ -175,15 +270,11 @@ export function ConsoleLayout() {
 
   return (
     <div className="min-h-screen flex bg-[#070b14] text-slate-100 font-sans selection:bg-orange-500 selection:text-white">
-      {/* =====================================================================
-       * 1. Desktop 21st.dev Collapsible Glass Sidebar (lg+)
-       * ===================================================================== */}
       <aside
         className={`hidden lg:flex flex-col shrink-0 bg-[#0b101e]/95 border-r border-slate-800/90 backdrop-blur-xl transition-[width] duration-300 ease-out sticky top-0 h-screen z-30 ${
           sidebarCollapsed ? 'w-20' : 'w-72'
         }`}
       >
-        {/* Brand Header + Collapse Toggle */}
         <div className="h-16 px-4 border-b border-slate-800/90 flex items-center justify-between gap-2">
           <Link
             to="/projects"
@@ -222,7 +313,6 @@ export function ConsoleLayout() {
           </button>
         </div>
 
-        {/* Custom Interactive Project Switcher Popover */}
         <div ref={switcherRef} className="p-3 border-b border-slate-800/90 relative">
           {!sidebarCollapsed ? (
             <>
@@ -264,7 +354,6 @@ export function ConsoleLayout() {
             </button>
           )}
 
-          {/* Dropdown Menu */}
           {switcherOpen && (
             <div
               className={`absolute z-50 mt-2 rounded-2xl bg-[#0e1526] border border-slate-700/90 shadow-2xl p-2 space-y-1 ${
@@ -321,7 +410,6 @@ export function ConsoleLayout() {
           )}
         </div>
 
-        {/* Navigation Items with 21st.dev Tubelight Active Bar */}
         <nav className="flex-1 p-3 space-y-1.5 overflow-y-auto">
           {menuItems.map((item) => {
             const Icon = item.icon;
@@ -340,7 +428,6 @@ export function ConsoleLayout() {
                     : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100 border border-transparent'
                 }`}
               >
-                {/* Left Fluorescent Laser Bar */}
                 {active && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-r-full bg-orange-400 shadow-[0_0_12px_2px_rgba(251,146,60,0.9)]" />
                 )}
@@ -370,7 +457,6 @@ export function ConsoleLayout() {
           })}
         </nav>
 
-        {/* Connected AI Bots Status Card (Expanded Mode) */}
         {!sidebarCollapsed && (
           <div className="px-3 pb-3">
             <div className="p-3.5 rounded-2xl bg-[#070b14] border border-slate-800/90 space-y-2.5">
@@ -411,7 +497,6 @@ export function ConsoleLayout() {
           </div>
         )}
 
-        {/* User Footer */}
         <div className="p-3 border-t border-slate-800/90 flex items-center justify-between gap-2">
           {!sidebarCollapsed ? (
             <>
@@ -446,9 +531,6 @@ export function ConsoleLayout() {
         </div>
       </aside>
 
-      {/* =====================================================================
-       * 2. Mobile Slide-Over Glassmorphic Sidebar Drawer (< lg)
-       * ===================================================================== */}
       {mobileDrawerOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex">
           <div
@@ -478,7 +560,6 @@ export function ConsoleLayout() {
                 </button>
               </div>
 
-              {/* Mobile Project Selector */}
               <div className="p-4 border-b border-slate-800 space-y-2">
                 <label className="block text-xs text-slate-400 font-medium">
                   สลับโปรเจกต์ร้านค้า
@@ -513,7 +594,6 @@ export function ConsoleLayout() {
                 </div>
               </div>
 
-              {/* Mobile Drawer Navigation */}
               <nav className="p-3 space-y-1.5">
                 {menuItems.map((item) => {
                   const Icon = item.icon;
@@ -569,11 +649,7 @@ export function ConsoleLayout() {
         </div>
       )}
 
-      {/* =====================================================================
-       * 3. Main Content Column + Sticky Command Header + Mobile Bottom Dock
-       * ===================================================================== */}
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Sticky Top Command Bar */}
         <header className="sticky top-0 z-20 min-h-16 bg-[#0b101e]/85 backdrop-blur-xl border-b border-slate-800/90 px-4 sm:px-6 lg:px-8 py-2.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -604,7 +680,6 @@ export function ConsoleLayout() {
             </div>
           </div>
 
-          {/* Right Webhook Interactive Pill & Status */}
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             <button
               type="button"
@@ -634,7 +709,6 @@ export function ConsoleLayout() {
           </div>
         </header>
 
-        {/* Workspace Tab Content with Subtle Ambient Mesh */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-24 lg:pb-10 overflow-y-auto bg-grid-dark">
           <div key={`${currentProject.id}-${activeTab}`} className="max-w-6xl mx-auto">
             {activeTab === 'tickets' && <TicketsTab project={currentProject} />}
@@ -644,9 +718,6 @@ export function ConsoleLayout() {
           </div>
         </main>
 
-        {/* ===================================================================
-         * Mobile Bottom 21st.dev Tubelight Tab Dock (< lg)
-         * =================================================================== */}
         <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-[#090e1c]/95 backdrop-blur-xl border-t border-slate-800/90 px-2 py-1.5">
           <div className="grid grid-cols-4 gap-1">
             {menuItems.map((item) => {

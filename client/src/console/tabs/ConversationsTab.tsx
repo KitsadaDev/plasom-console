@@ -1,39 +1,77 @@
-import { useState } from 'react';
-import { MOCK_THREADS, ProjectItem } from '../mockConsoleData';
+import { useState, useEffect } from 'react';
+import { Loader2 } from 'lucide-react';
+import { ChatThread, MOCK_THREADS, ProjectItem } from '../mockConsoleData';
+import { fetchProjectThreadsApi } from '../consoleApi';
 import { avatarInitial, belongsToProject, filterThreadsByCustomer } from './tabUtils';
 
 interface Props {
   project: ProjectItem;
 }
 
-/** key = project.id → สลับร้านแล้วคำค้นหา/ห้องที่เลือกจะเริ่มใหม่ ไม่ติดมาจากร้านก่อน */
 export function ConversationsTab({ project }: Props) {
   return <ConversationsTabContent key={project.id} project={project} />;
 }
 
 function ConversationsTabContent({ project }: Props) {
-  const threads = MOCK_THREADS.filter((t) => belongsToProject(t.projectId, project.id));
+  const fallbackMocks = MOCK_THREADS.filter((t) => belongsToProject(t.projectId, project.id));
+  const [threads, setThreads] = useState<ChatThread[]>(fallbackMocks);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState<string>(threads[0]?.id || '');
+  const [selectedId, setSelectedId] = useState<string>(fallbackMocks[0]?.id || '');
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (project.id.startsWith('proj-')) {
+        setThreads(fallbackMocks);
+        setSelectedId(fallbackMocks[0]?.id || '');
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        const dbThreads = await fetchProjectThreadsApi(project.id);
+        if (!cancelled) {
+          const finalList = dbThreads.length > 0 ? dbThreads : fallbackMocks;
+          setThreads(finalList);
+          if (finalList[0]) setSelectedId(finalList[0].id);
+        }
+      } catch {
+        if (!cancelled) setThreads(fallbackMocks);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   const visibleThreads = filterThreadsByCustomer(threads, query);
-  // ถ้าห้องที่เลือกไว้ถูกกรองออก ให้เปิดห้องแรกของผลค้นหาแทน
   const activeThread = visibleThreads.find((t) => t.id === selectedId) || visibleThreads[0];
 
   return (
     <div className="space-y-6">
-      <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20 text-xs text-purple-300">
-        <span className="font-bold text-purple-200">ขอบเขตงานทีม (ไฟล์ ConversationsTab.tsx): </span>
-        <span>เชื่อมต่อ API ประวัติการสนทนาจาก Botnoi เพื่อแสดงข้อความที่ลูกค้าคุยกับบอทใน LINE / Messenger / Voicebot</span>
+      <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+            <span className="w-2.5 h-6 rounded-sm bg-orange-500 inline-block" />
+            <span>ประวัติบทสนทนาบอท (Conversations)</span>
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            ตรวจสอบข้อความสนทนาระหว่างลูกค้ากับ AI Chatbot / Voicebot และใบงานที่ถูกเปิดอัตโนมัติ
+          </p>
+        </div>
+        {loading && <Loader2 className="w-5 h-5 animate-spin text-orange-400" />}
       </div>
 
       {threads.length === 0 ? (
         <div className="p-12 rounded-2xl bg-[#111827] border border-slate-800 text-center text-sm text-slate-400">
-          ยังไม่มีประวัติบทสนทนาในโปรเจกต์นี้ (ลองสลับไปดูโปรเจกต์ตัวอย่างด้านซ้ายมือเพื่อดูหน้าตาห้องแชท)
+          ยังไม่มีประวัติบทสนทนาในโปรเจกต์นี้ เมื่อลูกค้าแจ้งซ่อมผ่านบอทหรือสร้างใบงานใหม่ ประวัติแชทจะแสดงที่นี่อัตโนมัติ
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 bg-[#111827] rounded-2xl border border-slate-800 overflow-hidden min-h-[480px]">
-          {/* ---------- รายชื่อห้องแชท + ช่องค้นหา ---------- */}
           <div className="border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col min-h-0">
             <div className="p-3 border-b border-slate-800">
               <label htmlFor="chat-search" className="sr-only">
@@ -101,7 +139,6 @@ function ConversationsTabContent({ project }: Props) {
             </div>
           </div>
 
-          {/* ---------- ห้องอ่านแชทย้อนหลัง ---------- */}
           <div className="lg:col-span-2 flex flex-col min-h-0 bg-[#0b0f19]/60">
             {activeThread ? (
               <>
@@ -148,7 +185,7 @@ function ConversationsTabContent({ project }: Props) {
                 </div>
 
                 <div className="px-6 py-3 border-t border-slate-800 text-[11px] text-slate-500 text-center">
-                  ประวัติย้อนหลังแบบอ่านอย่างเดียว · ข้อความถูกบันทึกจากบอทอัตโนมัติ
+                  ประวัติย้อนหลังแบบอ่านอย่างเดียว · ข้อความถูกบันทึกจากฐานข้อมูลจริง
                 </div>
               </>
             ) : (

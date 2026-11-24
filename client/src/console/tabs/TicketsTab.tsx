@@ -51,6 +51,15 @@ import {
   Copy,
 } from 'lucide-react';
 import { ConsoleTicket, MOCK_TECHS, MOCK_THREADS, MOCK_TICKETS, ProjectItem } from '../mockConsoleData';
+import {
+  fetchProjectTicketsApi,
+  fetchProjectTechniciansApi,
+  createManualTicketInDb,
+  updateProjectTicketApi,
+  mapBackendStatusToUi,
+  mapUiStatusToBackend,
+} from '../consoleApi';
+import type { TechnicianItem } from '../mockConsoleData';
 
 interface Props {
   project: ProjectItem;
@@ -344,7 +353,6 @@ function CustomDarkDateRangePicker({
             {Array.from({ length: firstDayOfWeek }).map((_, i) => (
               <span key={`empty-${i}`} className="p-1.5" />
             ))}
-
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
               const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -587,7 +595,6 @@ function CustomDarkSingleDatePicker({
             {Array.from({ length: firstDayOfWeek }).map((_, i) => (
               <span key={`empty-single-${i}`} className="p-1.5" />
             ))}
-
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
               const mm = String(currentMonth + 1).padStart(2, '0');
@@ -698,6 +705,73 @@ export function TicketsTab({ project }: Props) {
     }))
   );
 
+  const [dbTechs, setDbTechs] = useState<(TechnicianItem & { id: string })[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLiveTicketsAndTechs() {
+      if (project.id.startsWith('proj-')) return;
+      try {
+        const [rawTickets, rawTechs] = await Promise.all([
+          fetchProjectTicketsApi(project.id),
+          fetchProjectTechniciansApi(project.id),
+        ]);
+        if (cancelled) return;
+
+        setDbTechs(
+          rawTechs.map((tc: any) => ({
+            id: tc.id,
+            projectId: project.id,
+            name: tc.name,
+            specialty: tc.specialty || 'ช่างประจำร้าน',
+            activeJobs: Number(tc.activeJobs ?? tc._count?.tickets ?? 0),
+            status: tc.status === 'BUSY' ? 'BUSY' : 'AVAILABLE',
+          }))
+        );
+
+        setTickets(
+          rawTickets.map((t: any) => {
+            const extra =
+              t.extraFields && typeof t.extraFields === 'object' ? t.extraFields : {};
+            return {
+              id: t.id,
+              trackingCode: t.trackingCode,
+              projectId: project.id,
+              customerName: t.customerName,
+              customerPhone: t.customerPhone,
+              channel: extra._channel || extra.channel || 'LINE OA',
+              subject: t.brand || 'งานแจ้งซ่อม',
+              symptom: t.symptom,
+              preferredDate: t.preferredDate ? String(t.preferredDate).slice(0, 10) : '',
+              timeSlot: extra._timeSlot || t.note || '09:00 - 12:00 น. (ช่วงเช้า)',
+              priority: extra._priority || 'NORMAL',
+              address: t.address || '',
+              status: mapBackendStatusToUi(t.status, Boolean(t.technician?.name || t.technicianId)),
+              assignedTechName: t.technician?.name || undefined,
+              extraDetails: extra,
+              csatRating: t.review?.rating,
+              csatComment: t.review?.comment,
+              internalNotes: [
+                {
+                  id: `note-${t.id}`,
+                  author: 'ระบบฐานข้อมูล',
+                  text: `รับใบงานเข้าระบบ (${t.trackingCode})`,
+                  time: t.createdAt ? new Date(t.createdAt).toLocaleDateString('th-TH') : 'วันนี้',
+                },
+              ],
+            };
+          })
+        );
+      } catch {
+        // fallback
+      }
+    }
+    loadLiveTicketsAndTechs();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
   // View Switcher (ตารางใบงาน, ปฏิทินงาน, แดชบอร์ดสถิติ)
   const [activeView, setActiveView] = useState<'table' | 'calendar' | 'dashboard'>('table');
 
@@ -806,7 +880,7 @@ export function TicketsTab({ project }: Props) {
   };
 
   const projectTickets = tickets.filter((t) => t.projectId === project.id);
-  const projectTechs = MOCK_TECHS.map((t) => ({ ...t, projectId: project.id }));
+  const projectTechs = dbTechs.length > 0 ? dbTechs : MOCK_TECHS.map((t) => ({ ...t, projectId: project.id }));
 
   // Conflict Detection Helper
   const getTechJobCountOnDate = (techName: string, date: string, excludeTicketId?: string) => {
@@ -836,6 +910,7 @@ export function TicketsTab({ project }: Props) {
 
       const sub = (ticket.subject + ' ' + ticket.symptom).toLowerCase();
       const spec = tech.specialty.toLowerCase();
+
       if (
         (sub.includes('แอร์') && (spec.includes('แอร์') || spec.includes('อินเวอร์เตอร์'))) ||
         (sub.includes('ไฟ') && spec.includes('ไฟ')) ||
@@ -844,6 +919,7 @@ export function TicketsTab({ project }: Props) {
       ) {
         score += 25;
       }
+
       return { tech, score, count };
     });
 
@@ -936,6 +1012,15 @@ export function TicketsTab({ project }: Props) {
       return;
     }
 
+    const matchedTech = projectTechs.find((tc) => tc.name === assignTechName);
+    if (!project.id.startsWith('proj-')) {
+      updateProjectTicketApi(project.id, assigningTicket.id, {
+        status: 'RECEIVED',
+        technicianId: matchedTech?.id || null,
+        note: assignTimeSlot,
+      }).catch(() => {});
+    }
+
     const conflictCount = getTechJobCountOnDate(assignTechName, assignDate, assigningTicket.id);
 
     setTickets((prev) =>
@@ -996,16 +1081,20 @@ export function TicketsTab({ project }: Props) {
       return;
     }
 
+    if (!project.id.startsWith('proj-')) {
+      updateProjectTicketApi(project.id, ticketId, {
+        status: mapUiStatusToBackend(newStatus),
+      }).catch(() => {});
+    }
+
     startTransition(() => {
       setTickets((prev) =>
         prev.map((t) => (t.id === ticketId ? { ...t, status: newStatus } : t))
       );
     });
-
     if (selectedTicket && selectedTicket.id === ticketId) {
       setSelectedTicket((prev) => (prev ? { ...prev, status: newStatus } : null));
     }
-
     showToast(`เปลี่ยนสถานะเป็น "${STATUS_CONFIG[newStatus].label}"`, 'success');
   };
 
@@ -1013,6 +1102,13 @@ export function TicketsTab({ project }: Props) {
   const handleConfirmCloseTicket = () => {
     if (!closingTicket) return;
     const costNum = parseFloat(closingCost) || 0;
+
+    if (!project.id.startsWith('proj-')) {
+      updateProjectTicketApi(project.id, closingTicket.id, {
+        status: 'COMPLETED',
+        note: `${closingNotes} (ยอด ${closingCost} บาท)`,
+      }).catch(() => {});
+    }
 
     setTickets((prev) =>
       prev.map((t) =>
@@ -1041,7 +1137,7 @@ export function TicketsTab({ project }: Props) {
   };
 
   // Manual Creation
-  const handleCreateTicket = () => {
+  const handleCreateTicket = async () => {
     if (!createCustomerName.trim()) {
       showToast('กรุณาระบุชื่อลูกค้า', 'error');
       return;
@@ -1051,9 +1147,29 @@ export function TicketsTab({ project }: Props) {
       return;
     }
 
-    const code = `PS-${Math.floor(1000 + Math.random() * 9000)}`;
+    let createdDb: any = null;
+    if (!project.id.startsWith('proj-')) {
+      try {
+        createdDb = await createManualTicketInDb(project.id, {
+          customerName: createCustomerName.trim(),
+          customerPhone: createCustomerPhone.trim(),
+          subject: createSubject.trim(),
+          symptom: createSymptom.trim(),
+          address: createAddress.trim(),
+          preferredDate: createPreferredDate,
+          channel: createChannel,
+          timeSlot: createTimeSlot,
+          priority: createPriority,
+          extraDetails: createDynamicExtra,
+        });
+      } catch {
+        // fallback local if validation fails
+      }
+    }
+    const code = createdDb?.trackingCode || `PS-${Math.floor(1000 + Math.random() * 9000)}`;
+
     const newTicket: ExtendedTicket = {
-      id: `t-manual-${Date.now()}`,
+      id: createdDb?.id || `t-manual-${Date.now()}`,
       trackingCode: code,
       projectId: project.id,
       customerName: createCustomerName.trim(),
@@ -1081,7 +1197,6 @@ export function TicketsTab({ project }: Props) {
     startTransition(() => {
       setTickets((prev) => [newTicket, ...prev]);
     });
-
     setIsCreateModalOpen(false);
     showToast(`สร้างใบงานใหม่สำเร็จ: ${code} และบันทึกในปฏิทินแล้ว`, 'success');
   };
@@ -1125,6 +1240,7 @@ export function TicketsTab({ project }: Props) {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
     showToast('ดาวน์โหลดไฟล์ Excel เรียบร้อยแล้ว');
   };
 
@@ -1208,7 +1324,6 @@ export function TicketsTab({ project }: Props) {
   const calMonth = calDate.getMonth();
   const calDaysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
   const calFirstDayOfWeek = new Date(calYear, calMonth, 1).getDay(); // 0 = Sun
-
   const monthThaiNames = [
     'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
     'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม',
@@ -1531,7 +1646,9 @@ export function TicketsTab({ project }: Props) {
               dateRange.start ? 'วันที่' : '',
               priorityFilter !== 'ALL' ? 'เร่งด่วน' : '',
             ].filter(Boolean);
+
             if (activeFilters.length === 0) return null;
+
             return (
               <>
                 <span className="text-[10px] text-orange-400 font-semibold bg-orange-500/10 border border-orange-500/20 px-2 py-1 rounded-lg select-none">
@@ -1567,7 +1684,6 @@ export function TicketsTab({ project }: Props) {
             <CheckSquare className="w-4 h-4 text-orange-400" />
             <span>เลือกอยู่ {selectedIds.length} รายการ</span>
           </div>
-
           <div className="flex flex-wrap items-center gap-2">
             <select
               defaultValue=""
@@ -1699,7 +1815,6 @@ export function TicketsTab({ project }: Props) {
                       const priorityCfg = PRIORITY_CONFIG[ticket.priority || 'NORMAL'];
                       const nextAction = getNextStatusAction(ticket.status);
                       const isSelected = selectedIds.includes(ticket.id);
-
                       const hasConflict =
                         ticket.assignedTechName &&
                         ticket.preferredDate &&
@@ -1909,7 +2024,6 @@ export function TicketsTab({ project }: Props) {
                                 <span>กำหนดช่าง & วันนัด</span>
                               </button>
                             )}
-
                             {hasConflict && (
                               <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
                                 <AlertCircle className="w-3 h-3 text-amber-400 shrink-0" />
@@ -1940,7 +2054,6 @@ export function TicketsTab({ project }: Props) {
                                 <span>{statusCfg.label}</span>
                               </span>
                             </div>
-
                             <select
                               value={ticket.status}
                               onChange={(e) =>
@@ -2005,7 +2118,6 @@ export function TicketsTab({ project }: Props) {
                     <span className="text-white font-medium">{Math.min(currentPage * pageSize, sortedTickets.length)}</span> จากทั้งหมด{' '}
                     <span className="text-white font-medium">{sortedTickets.length}</span> รายการ
                   </div>
-
                   <div className="flex items-center gap-1.5 pl-3 border-l border-slate-800">
                     <span className="text-slate-500">แถวต่อหน้า:</span>
                     <select
@@ -2023,7 +2135,6 @@ export function TicketsTab({ project }: Props) {
                     </select>
                   </div>
                 </div>
-
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
@@ -2034,7 +2145,6 @@ export function TicketsTab({ project }: Props) {
                     <ChevronLeft className="w-3.5 h-3.5" />
                     <span>ก่อนหน้า</span>
                   </button>
-
                   {(() => {
                     const pages: (number | string)[] = [];
                     if (totalPages <= 6) {
@@ -2071,7 +2181,6 @@ export function TicketsTab({ project }: Props) {
                       );
                     });
                   })()}
-
                   <button
                     type="button"
                     onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
@@ -2094,6 +2203,7 @@ export function TicketsTab({ project }: Props) {
           ? projectTickets.filter((t) => t.preferredDate === selectedCalDay)
           : [];
         const isPanelOpen = Boolean(selectedCalDay);
+
         return (
         <div className="bg-[#111827] border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
           {/* Calendar Header with Month Navigation & Legend */}
@@ -2103,7 +2213,6 @@ export function TicketsTab({ project }: Props) {
                 <CalendarDays className="w-5 h-5 text-orange-400" />
                 <span>{monthThaiNames[calMonth]} {calYear + 543}</span>
               </h3>
-
               <div className="flex items-center gap-1 bg-[#0b0f19] p-1 rounded-xl border border-slate-800">
                 <button
                   type="button"
@@ -2182,7 +2291,6 @@ export function TicketsTab({ project }: Props) {
                   const mm = String(calMonth + 1).padStart(2, '0');
                   const dd = String(dayNum).padStart(2, '0');
                   const dateKey = `${calYear}-${mm}-${dd}`;
-
                   const dayTickets = projectTickets.filter((t) => t.preferredDate === dateKey);
                   const isToday = dateKey === '2026-11-24';
                   const isSelected = dateKey === selectedCalDay;
@@ -2350,7 +2458,6 @@ export function TicketsTab({ project }: Props) {
                           <Clock className="w-3 h-3 shrink-0" />
                           <span className="truncate">{t.timeSlot || 'ยังไม่ระบุเวลา'}</span>
                         </div>
-
                         <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
                           <Wrench className="w-3 h-3 shrink-0" />
                           <span className="truncate">{t.assignedTechName || 'ยังไม่มอบหมายช่าง'}</span>
@@ -2496,7 +2603,6 @@ export function TicketsTab({ project }: Props) {
                   </p>
                 </div>
               </div>
-
               <div className="flex items-center gap-2">
                 <div className="px-3.5 py-2 rounded-xl bg-[#0b0f19] border border-slate-700 text-xs text-slate-300 font-medium flex items-center gap-2">
                   <CalendarIcon className="w-3.5 h-3.5 text-orange-400" />
@@ -2789,7 +2895,6 @@ export function TicketsTab({ project }: Props) {
                             <div className="text-[11px] text-slate-400 truncate">{tech.specialty}</div>
                           </div>
                         </div>
-
                         <div className="text-right shrink-0">
                           <div className="text-xs font-bold text-white font-mono">{42 - idx * 7} งาน</div>
                           <div className="flex items-center gap-1 text-amber-400 text-[10px] font-semibold mt-0.5 justify-end">
@@ -3147,7 +3252,6 @@ export function TicketsTab({ project }: Props) {
                     https://api.plasom.app/v1/webhook/{project.id}
                   </div>
                 </div>
-
                 <button
                   type="button"
                   onClick={() => {
@@ -3178,7 +3282,6 @@ export function TicketsTab({ project }: Props) {
                 <div className="font-semibold text-slate-400 uppercase tracking-wider text-[11px]">
                   ประวัติการเรียก Webhook ล่าสุด
                 </div>
-
                 {webhookLogs.map((log) => (
                   <div
                     key={log.id}
@@ -3194,7 +3297,6 @@ export function TicketsTab({ project }: Props) {
                       </div>
                       <span className="text-slate-500">{log.timestamp}</span>
                     </div>
-
                     <div className="text-slate-400 text-[11px] flex items-center justify-between">
                       <span>ลูกค้า: {log.customerName}</span>
                       <span className="font-mono text-slate-500">Latency: {log.latencyMs}ms</span>
@@ -3253,7 +3355,6 @@ export function TicketsTab({ project }: Props) {
                 </div>
                 <h3 className="text-base font-bold text-white mt-1.5">{selectedTicket.subject}</h3>
               </div>
-
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -3509,7 +3610,6 @@ export function TicketsTab({ project }: Props) {
                     </div>
                   ))}
                 </div>
-
                 <div className="pt-2 flex gap-2">
                   <input
                     type="text"
@@ -3559,7 +3659,6 @@ export function TicketsTab({ project }: Props) {
                       CRM Verified
                     </span>
                   </div>
-
                   <div className="grid grid-cols-2 gap-3 text-slate-300">
                     <div>
                       <span className="text-slate-400 block text-[11px]">รุ่น / โมเดลอุปกรณ์:</span>
@@ -4237,7 +4336,6 @@ export function TicketsTab({ project }: Props) {
                             <span>เริ่มเข้าปฏิบัติงาน</span>
                           </button>
                         )}
-
                         {job.status === 'IN_PROGRESS' && (
                           <button
                             type="button"

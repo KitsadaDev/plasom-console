@@ -29,11 +29,14 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('coolcare_token')
-      // redirect to login only if accessing admin or if on an admin path
-      if (
-        (window.location.pathname.startsWith('/admin') || error.config?.url?.includes('/admin')) &&
-        !window.location.pathname.includes('/login')
-      ) {
+      const path = window.location.pathname
+      const isProtectedPath =
+        path.startsWith('/admin') ||
+        path.startsWith('/projects') ||
+        error.config?.url?.includes('/admin') ||
+        error.config?.url?.includes('/projects')
+
+      if (isProtectedPath && !path.includes('/login')) {
         window.location.href = '/login'
       }
     }

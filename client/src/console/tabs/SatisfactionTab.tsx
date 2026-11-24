@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import { MOCK_REVIEWS, ProjectItem } from '../mockConsoleData';
+import { useState, useEffect } from 'react';
+import { Loader2 } from 'lucide-react';
+import { MOCK_REVIEWS, ProjectItem, SatisfactionItem } from '../mockConsoleData';
+import { fetchProjectReviewsApi } from '../consoleApi';
 import {
   averageRating,
   belongsToProject,
@@ -13,7 +15,6 @@ interface Props {
 }
 
 function Stars({ rating }: { rating: number }) {
-  // บีบให้อยู่ 0-5 กันข้อมูลเพี้ยน (เช่น 6 หรือ -1) ทำ '★'.repeat() พังทั้งหน้า
   const full = clampRating(rating);
   return (
     <span aria-label={`${full} จาก 5 ดาว`}>
@@ -23,14 +24,41 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
-/** key = project.id → สลับร้านแล้วตัวกรองดาวจะรีเซ็ต ไม่ติดมาจากร้านก่อน */
 export function SatisfactionTab({ project }: Props) {
   return <SatisfactionTabContent key={project.id} project={project} />;
 }
 
 function SatisfactionTabContent({ project }: Props) {
-  const reviews = MOCK_REVIEWS.filter((r) => belongsToProject(r.projectId, project.id));
+  const fallbackMocks = MOCK_REVIEWS.filter((r) => belongsToProject(r.projectId, project.id));
+  const [reviews, setReviews] = useState<SatisfactionItem[]>(fallbackMocks);
+  const [loading, setLoading] = useState(true);
   const [starFilter, setStarFilter] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (project.id.startsWith('proj-')) {
+        setReviews(fallbackMocks);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        const dbReviews = await fetchProjectReviewsApi(project.id);
+        if (!cancelled) {
+          setReviews(dbReviews.length > 0 ? dbReviews : fallbackMocks);
+        }
+      } catch {
+        if (!cancelled) setReviews(fallbackMocks);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   const avgScore = averageRating(reviews);
   const distribution = ratingDistribution(reviews);
@@ -41,12 +69,19 @@ function SatisfactionTabContent({ project }: Props) {
 
   return (
     <div className="space-y-6">
-      <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
-        <span className="font-bold text-amber-200">ขอบเขตงานทีม (ไฟล์ SatisfactionTab.tsx): </span>
-        <span>ทำแดชบอร์ดกราฟสรุปคะแนนความพึงพอใจ (CSAT 1-5 ดาว) และรายการคำติชมหลังช่างปิดงานซ่อม</span>
+      <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+            <span className="w-2.5 h-6 rounded-sm bg-amber-400 inline-block" />
+            <span>ความพึงพอใจลูกค้า (CSAT Reviews)</span>
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            สรุปคะแนนรีวิว 1–5 ดาว และข้อเสนอแนะจากลูกค้าหลังปิดใบงานซ่อมสำเร็จ
+          </p>
+        </div>
+        {loading && <Loader2 className="w-5 h-5 animate-spin text-amber-400" />}
       </div>
 
-      {/* ---------- การ์ดสรุป ---------- */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-6 rounded-2xl bg-[#111827] border border-slate-800">
           <div className="text-xs text-slate-400">คะแนนความพึงพอใจเฉลี่ย</div>
@@ -67,7 +102,6 @@ function SatisfactionTabContent({ project }: Props) {
         </div>
       </div>
 
-      {/* ---------- กราฟสรุปคะแนน 1-5 ดาว ---------- */}
       <div className="p-6 rounded-2xl bg-[#111827] border border-slate-800">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-bold text-white text-sm">สรุปคะแนนรีวิวแยกตามดาว</h3>
@@ -102,7 +136,6 @@ function SatisfactionTabContent({ project }: Props) {
         </div>
       </div>
 
-      {/* ---------- ตัวกรอง + รายการคำติชม ---------- */}
       <div className="bg-[#111827] rounded-2xl border border-slate-800">
         <div className="p-4 border-b border-slate-800 flex flex-wrap items-center gap-2">
           <span className="text-xs text-slate-400 mr-1">กรองคำติชม:</span>
@@ -128,7 +161,9 @@ function SatisfactionTabContent({ project }: Props) {
 
         <div className="divide-y divide-slate-800">
           {reviews.length === 0 ? (
-            <div className="p-10 text-center text-sm text-slate-400">ยังไม่มีข้อมูลรีวิวในโปรเจกต์นี้</div>
+            <div className="p-10 text-center text-sm text-slate-400">
+              ยังไม่มีข้อมูลรีวิวในโปรเจกต์นี้ (รีวิวจะถูกบันทึกผ่าน Webhook หลังใบงานปิดสถานะเสร็จสิ้น)
+            </div>
           ) : visibleReviews.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-400">
               ยังไม่มีรีวิว {starFilter} ดาว{' '}

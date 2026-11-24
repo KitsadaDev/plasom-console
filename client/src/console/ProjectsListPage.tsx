@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -18,9 +18,16 @@ import {
   Layers,
   CheckCircle2,
   X,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { loadProjects, loadDemoProjectsForUser, type ProjectItem } from './mockConsoleData';
+import {
+  loadProjects,
+  loadDemoProjectsForUser,
+  saveNewProject,
+  type ProjectItem,
+} from './mockConsoleData';
+import { fetchMyProjects, createProjectApi } from './consoleApi';
 import { avatarInitial } from './tabs/tabUtils';
 import { ScrollReveal, Tilt3DCard, NumberTicker } from '../components/InteractiveUI';
 import {
@@ -81,7 +88,9 @@ function getCategoryVisual(category: string) {
 }
 
 export function ProjectsListPage() {
-  const [loadedDemoList, setLoadedDemoList] = useState<ProjectItem[] | null>(null);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSeedingDemo, setIsSeedingDemo] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [botFilter, setBotFilter] = useState<BotFilterKey>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -90,19 +99,71 @@ export function ProjectsListPage() {
   const navigate = useNavigate();
   const userId = user?.id;
 
-  const projects = useMemo<ProjectItem[]>(() => {
-    if (loadedDemoList) return loadedDemoList;
-    return userId ? loadProjects(userId) : [];
-  }, [loadedDemoList, userId]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFromDb() {
+      if (!userId) {
+        setProjects([]);
+        setIsLoading(false);
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const dbProjects = await fetchMyProjects();
+        if (!cancelled) {
+          setProjects(dbProjects);
+          // ซิงก์เข้า local cache เพื่อให้หน้า ConsoleLayout เปิดโปรเจกต์ได้ทันที
+          dbProjects.forEach((p) => saveNewProject(p, userId));
+        }
+      } catch {
+        if (!cancelled) {
+          setProjects(loadProjects(userId));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+    loadFromDb();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
 
-  const handleLoadDemo = () => {
-    if (!user?.id) return;
-    setLoadedDemoList(loadDemoProjectsForUser(user.id));
+  const handleLoadDemo = async () => {
+    if (!user?.id || isSeedingDemo) return;
+    setIsSeedingDemo(true);
+    try {
+      const demos = loadDemoProjectsForUser(user.id);
+      const createdList: ProjectItem[] = [];
+      for (const demo of demos) {
+        const { project } = await createProjectApi({
+          name: demo.name,
+          branchName: demo.branchName,
+          category: demo.category,
+          chatbotConnected: demo.chatbotConnected,
+          botnoiBotId: demo.botnoiBotId || null,
+          voicebotConnected: demo.voicebotConnected,
+          voiceAgentId: demo.voiceAgentId || null,
+          greetingMessage: demo.greetingMessage,
+          requiredFields: demo.requiredFields,
+          features: demo.features,
+        });
+        saveNewProject(project, user.id);
+        createdList.push(project);
+      }
+      setProjects(createdList);
+    } catch {
+      setProjects(loadDemoProjectsForUser(user.id));
+    } finally {
+      setIsSeedingDemo(false);
+    }
   };
 
   const stats = useMemo(() => {
@@ -147,9 +208,6 @@ export function ProjectsListPage() {
       showBeams={false}
       className="min-h-screen text-slate-100 font-sans selection:bg-orange-500 selection:text-white"
     >
-      {/* =====================================================================
-       * Sticky Glassmorphic Workspace Header
-       * ===================================================================== */}
       <header className="sticky top-0 z-40 bg-[#090d18]/85 backdrop-blur-xl border-b border-slate-800/90">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <Link to="/" className="flex items-center gap-3 group shrink-0">
@@ -189,7 +247,6 @@ export function ProjectsListPage() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
-        {/* Page Heading & Primary Action */}
         <ScrollReveal>
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
             <div>
@@ -217,10 +274,12 @@ export function ProjectsListPage() {
           </div>
         </ScrollReveal>
 
-        {projects.length === 0 ? (
-          /* =================================================================
-           * 21st.dev Empty Workspace Card with BorderBeam & Demo Loader
-           * ================================================================= */
+        {isLoading ? (
+          <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
+            <Loader2 className="w-7 h-7 animate-spin text-orange-400" />
+            <span className="text-sm">กำลังดึงข้อมูลโปรเจกต์จากฐานข้อมูล...</span>
+          </div>
+        ) : projects.length === 0 ? (
           <ScrollReveal delay={80}>
             <div className="max-w-2xl mx-auto my-6">
               <GlowingCard
@@ -246,7 +305,6 @@ export function ProjectsListPage() {
                   </p>
                 </div>
 
-                {/* Preview of Supported Categories */}
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                   {[
                     { icon: Wind, label: 'ร้านแอร์' },
@@ -278,8 +336,16 @@ export function ProjectsListPage() {
                     onClick={handleLoadDemo}
                     className="px-5 py-3.5 text-xs sm:text-sm"
                   >
-                    <Bot className="w-4 h-4 text-orange-400" />
-                    <span>โหลดโปรเจกต์ตัวอย่างมาทดลองดู</span>
+                    {isSeedingDemo ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+                    ) : (
+                      <Bot className="w-4 h-4 text-orange-400" />
+                    )}
+                    <span>
+                      {isSeedingDemo
+                        ? 'กำลังสร้างโปรเจกต์ตัวอย่าง...'
+                        : 'โหลดโปรเจกต์ตัวอย่างมาทดลองดู'}
+                    </span>
                   </ShimmerButton>
                 </div>
               </GlowingCard>
@@ -287,9 +353,6 @@ export function ProjectsListPage() {
           </ScrollReveal>
         ) : (
           <>
-            {/* ===============================================================
-             * KPI Summary Bento Strip (21st.dev NumberTicker + GlowingCard)
-             * =============================================================== */}
             <ScrollReveal delay={60}>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4 mb-7">
                 {[
@@ -328,12 +391,8 @@ export function ProjectsListPage() {
               </div>
             </ScrollReveal>
 
-            {/* ===============================================================
-             * Interactive Search, Tubelight Filter & View Mode Toolbar
-             * =============================================================== */}
             <ScrollReveal delay={120}>
               <div className="mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-3.5 p-3 rounded-2xl bg-[#0c1221]/90 border border-slate-800/90 backdrop-blur-xl">
-                {/* Search Box */}
                 <div className="relative flex-1 min-w-0">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -355,7 +414,6 @@ export function ProjectsListPage() {
                   )}
                 </div>
 
-                {/* Filters + Layout Switcher */}
                 <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2.5">
                   <div className="overflow-x-auto no-scrollbar">
                     <TubelightTabs<BotFilterKey>
@@ -408,7 +466,6 @@ export function ProjectsListPage() {
               </div>
             </ScrollReveal>
 
-            {/* No Search Results Fallback */}
             {filteredProjects.length === 0 ? (
               <div className="p-10 rounded-2xl bg-[#0e1424]/90 border border-slate-800 text-center space-y-3">
                 <div className="text-base font-bold text-white">
@@ -429,9 +486,6 @@ export function ProjectsListPage() {
                 </button>
               </div>
             ) : viewMode === 'grid' ? (
-              /* =============================================================
-               * Grid View: 21st.dev GlowingCard + Tilt3DCard Project Cards
-               * ============================================================= */
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
                 {filteredProjects.map((proj, idx) => {
                   const visual = getCategoryVisual(proj.category);
@@ -452,7 +506,6 @@ export function ProjectsListPage() {
                             className="p-6 h-full flex flex-col justify-between"
                           >
                             <div>
-                              {/* Top Badges */}
                               <div className="flex items-start justify-between gap-2">
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   <div
@@ -473,7 +526,6 @@ export function ProjectsListPage() {
                                 </span>
                               </div>
 
-                              {/* Store Title & Branch */}
                               <div className="mt-4">
                                 <h2 className="text-lg font-bold text-white group-hover:text-orange-300 transition-colors line-clamp-1">
                                   {proj.name}
@@ -483,7 +535,6 @@ export function ProjectsListPage() {
                                 </p>
                               </div>
 
-                              {/* Chatbot / Voicebot Connection Pills */}
                               <div className="mt-4 pt-4 border-t border-slate-800/80 flex flex-wrap gap-2">
                                 <span
                                   className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg font-medium ${
@@ -507,7 +558,6 @@ export function ProjectsListPage() {
                                 </span>
                               </div>
 
-                              {/* Dynamic Fields Tags */}
                               <div className="mt-4">
                                 <div className="text-[11px] text-slate-400 mb-1.5">
                                   ข้อมูลที่บอทถามลูกค้า ({proj.requiredFields.length} หัวข้อ):
@@ -530,7 +580,6 @@ export function ProjectsListPage() {
                               </div>
                             </div>
 
-                            {/* Card Footer */}
                             <div className="mt-5 pt-3.5 border-t border-slate-800/80 flex items-center justify-between text-xs">
                               <span className="inline-flex items-center gap-1 text-slate-400">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -548,7 +597,6 @@ export function ProjectsListPage() {
                   );
                 })}
 
-                {/* Quick Add New Store Card */}
                 <ScrollReveal delay={180}>
                   <Link
                     to="/projects/new"
@@ -567,9 +615,6 @@ export function ProjectsListPage() {
                 </ScrollReveal>
               </div>
             ) : (
-              /* =============================================================
-               * Compact List View (Desktop/Tablet)
-               * ============================================================= */
               <div className="space-y-3">
                 {filteredProjects.map((proj) => {
                   const visual = getCategoryVisual(proj.category);
