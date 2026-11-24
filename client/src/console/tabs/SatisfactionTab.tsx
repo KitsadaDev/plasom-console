@@ -3,6 +3,7 @@ import { MOCK_REVIEWS, ProjectItem } from '../mockConsoleData';
 import {
   averageRating,
   belongsToProject,
+  clampRating,
   filterReviewsByRating,
   ratingDistribution,
 } from './tabUtils';
@@ -12,7 +13,8 @@ interface Props {
 }
 
 function Stars({ rating }: { rating: number }) {
-  const full = Math.round(rating);
+  // บีบให้อยู่ 0-5 กันข้อมูลเพี้ยน (เช่น 6 หรือ -1) ทำ '★'.repeat() พังทั้งหน้า
+  const full = clampRating(rating);
   return (
     <span aria-label={`${full} จาก 5 ดาว`}>
       <span className="text-amber-400">{'★'.repeat(full)}</span>
@@ -21,7 +23,12 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
+/** key = project.id → สลับร้านแล้วตัวกรองดาวจะรีเซ็ต ไม่ติดมาจากร้านก่อน */
 export function SatisfactionTab({ project }: Props) {
+  return <SatisfactionTabContent key={project.id} project={project} />;
+}
+
+function SatisfactionTabContent({ project }: Props) {
   const reviews = MOCK_REVIEWS.filter((r) => belongsToProject(r.projectId, project.id));
   const [starFilter, setStarFilter] = useState<number | null>(null);
 

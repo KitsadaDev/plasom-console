@@ -1,12 +1,17 @@
 import { useState } from 'react';
 import { MOCK_THREADS, ProjectItem } from '../mockConsoleData';
-import { belongsToProject, filterThreadsByCustomer } from './tabUtils';
+import { avatarInitial, belongsToProject, filterThreadsByCustomer } from './tabUtils';
 
 interface Props {
   project: ProjectItem;
 }
 
+/** key = project.id → สลับร้านแล้วคำค้นหา/ห้องที่เลือกจะเริ่มใหม่ ไม่ติดมาจากร้านก่อน */
 export function ConversationsTab({ project }: Props) {
+  return <ConversationsTabContent key={project.id} project={project} />;
+}
+
+function ConversationsTabContent({ project }: Props) {
   const threads = MOCK_THREADS.filter((t) => belongsToProject(t.projectId, project.id));
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>(threads[0]?.id || '');
@@ -103,7 +108,7 @@ export function ConversationsTab({ project }: Props) {
                 <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-full bg-slate-700 text-white font-bold flex items-center justify-center shrink-0">
-                      {activeThread.customerName.replace(/^คุณ/, '').charAt(0) || '?'}
+                      {avatarInitial(activeThread.customerName)}
                     </div>
                     <div className="min-w-0">
                       <div className="font-bold text-white truncate">{activeThread.customerName}</div>

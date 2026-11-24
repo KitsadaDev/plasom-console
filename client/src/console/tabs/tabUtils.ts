@@ -28,7 +28,7 @@ export interface RatingBucket {
 export function ratingDistribution(reviews: SatisfactionItem[]): RatingBucket[] {
   const total = reviews.length;
   return [5, 4, 3, 2, 1].map((star) => {
-    const count = reviews.filter((r) => Math.round(r.rating) === star).length;
+    const count = reviews.filter((r) => clampRating(r.rating) === star).length;
     return { star, count, percent: total === 0 ? 0 : Math.round((count / total) * 100) };
   });
 }
@@ -36,7 +36,7 @@ export function ratingDistribution(reviews: SatisfactionItem[]): RatingBucket[] 
 /** คะแนนเฉลี่ยทศนิยม 1 ตำแหน่ง เช่น "4.5" (ไม่มีรีวิว = "0.0") */
 export function averageRating(reviews: SatisfactionItem[]): string {
   if (reviews.length === 0) return '0.0';
-  return (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1);
+  return (reviews.reduce((sum, r) => sum + clampRating(r.rating), 0) / reviews.length).toFixed(1);
 }
 
 /** กรองรีวิวตามจำนวนดาว (null = ทั้งหมด) เรียงใหม่สุดก่อน */
@@ -44,6 +44,21 @@ export function filterReviewsByRating(
   reviews: SatisfactionItem[],
   star: number | null,
 ): SatisfactionItem[] {
-  const list = star === null ? reviews : reviews.filter((r) => Math.round(r.rating) === star);
+  const list = star === null ? reviews : reviews.filter((r) => clampRating(r.rating) === star);
   return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** ปัดคะแนนให้เป็นจำนวนเต็ม 0-5 เสมอ (ค่าเพี้ยน/ไม่ใช่ตัวเลข = 0) */
+export function clampRating(rating: number): number {
+  if (!Number.isFinite(rating)) return 0;
+  return Math.min(5, Math.max(0, Math.round(rating)));
+}
+
+// สระหน้าไทย เ แ โ ใ ไ — ถ้าเป็นตัวแรกของชื่อจะดูแปลกเมื่อโชว์เดี่ยวๆ
+const LEADING_THAI_VOWELS = /^[เ-ไ]/;
+
+/** ตัวอักษรแรกของชื่อสำหรับวงกลมรูปโปรไฟล์ เช่น "คุณเอก" → "อ", "คุณพิมพ์ชนก" → "พ" */
+export function avatarInitial(customerName: string): string {
+  const name = customerName.trim().replace(/^คุณ\s*/, '').replace(LEADING_THAI_VOWELS, '');
+  return name.charAt(0).toUpperCase() || '?';
 }
