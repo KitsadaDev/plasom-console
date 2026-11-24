@@ -1,155 +1,152 @@
 <!doctype html>
 <html lang="th">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23003882'><path d='M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-2h2zm0-4h-2V7h2z'/></svg>" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Plasom - ระบบแจ้งซ่อมและติดตามสถานะแอร์ครบวงจร</title>
 
-    <!-- Google Fonts: Prompt + Plus Jakarta Sans + JetBrains Mono -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Prompt:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
-      rel="stylesheet"
-    />
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23f97316'><path d='M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-2h2zm0-4h-2V7h2z'/></svg>" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plasom Console — แพลตฟอร์มกลางจัดการงานซ่อมด้วย AI</title>
 
-    <!-- ย้ายเฉพาะ Botnoi Customer Chat (bn-) ไปมุมซ้ายล่าง โดยไม่แตะ WebAvatar -->
-    <style>
+  <!-- Google Fonts: Prompt + Plus Jakarta Sans + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Prompt:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+    rel="stylesheet" />
+
+  <!-- ย้ายเฉพาะ Botnoi Customer Chat (bn-) ไปมุมซ้ายล่าง โดยไม่แตะ WebAvatar -->
+  <style>
+    #bn-root,
+    .bn-customerchat,
+    [id^="bn-"]:not(#webavatar-jssdk),
+    [class^="bn-"],
+    [class*=" bn-"],
+    iframe[src*="console.botnoi.ai"] {
+      left: 24px !important;
+      right: auto !important;
+    }
+
+    @media (max-width: 640px) {
       #bn-root,
       .bn-customerchat,
       [id^="bn-"]:not(#webavatar-jssdk),
       [class^="bn-"],
       [class*=" bn-"],
       iframe[src*="console.botnoi.ai"] {
-        left: 24px !important;
+        left: 14px !important;
         right: auto !important;
       }
-      @media (max-width: 640px) {
-        #bn-root,
-        .bn-customerchat,
-        [id^="bn-"]:not(#webavatar-jssdk),
-        [class^="bn-"],
-        [class*=" bn-"],
-        iframe[src*="console.botnoi.ai"] {
-          left: 14px !important;
-          right: auto !important;
+    }
+  </style>
+</head>
+
+<body class="font-sans antialiased text-slate-100 bg-[#0b0f19] selection:bg-orange-500 selection:text-white">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+
+  <!-- =========================== -->
+  <!-- 1. Botnoi AI Customer Chat Widget (ฝั่งซ้ายล่าง - ตัวใหม่แนะนำแพลตฟอร์ม) -->
+  <!-- =========================== -->
+  <div id="bn-root"></div>
+  <script>
+    window.addEventListener('load', function () {
+      if (window.BN) {
+        window.BN.init({ version: '1.0' });
+      }
+    });
+
+    (function () {
+      function moveNodeLeft(node) {
+        if (!node || !node.style) return;
+        var cs = window.getComputedStyle(node);
+        if (cs.position === 'fixed' || cs.position === 'absolute') {
+          if (cs.right !== 'auto' && parseFloat(cs.right) < 120) {
+            node.style.setProperty('left', '24px', 'important');
+            node.style.setProperty('right', 'auto', 'important');
+          }
         }
       }
-    </style>
-  </head>
-  <body class="font-sans antialiased text-slate-800 bg-slate-50 selection:bg-orange-500 selection:text-white">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
 
-    <!-- =========================== -->
-    <!-- 1. Botnoi AI Customer Chat Widget (ฝั่งซ้ายล่าง) -->
-    <!-- =========================== -->
-    <div id="bn-root"></div>
-    <script>
-      window.addEventListener('load', function () {
-        if (window.BN) {
-          window.BN.init({ version: '1.0' });
-        }
-      });
+      function scanTree(root) {
+        if (!root) return;
+        if (root.nodeType === 1) moveNodeLeft(root);
 
-      (function () {
-        function moveNodeLeft(node) {
-          if (!node || !node.style) return;
-          var cs = window.getComputedStyle(node);
-          if (cs.position === 'fixed' || cs.position === 'absolute') {
-            if (cs.right !== 'auto' && parseFloat(cs.right) < 120) {
-              node.style.setProperty('left', '24px', 'important');
-              node.style.setProperty('right', 'auto', 'important');
-            }
+        if (root.shadowRoot) {
+          if (!root.shadowRoot.getElementById('bn-left-override')) {
+            var st = document.createElement('style');
+            st.id = 'bn-left-override';
+            st.textContent =
+              '*, :host { } [style*="right"], .chat-btn, .chat-box, .bn-chat, button, iframe { left: 24px !important; right: auto !important; }';
+            root.shadowRoot.appendChild(st);
+          }
+          var shadowEls = root.shadowRoot.querySelectorAll('*');
+          for (var s = 0; s < shadowEls.length; s++) {
+            moveNodeLeft(shadowEls[s]);
           }
         }
 
-        function scanTree(root) {
-          if (!root) return;
-          if (root.nodeType === 1) moveNodeLeft(root);
-
-          if (root.shadowRoot) {
-            if (!root.shadowRoot.getElementById('bn-left-override')) {
-              var st = document.createElement('style');
-              st.id = 'bn-left-override';
-              st.textContent =
-                '*, :host { } [style*="right"], .chat-btn, .chat-box, .bn-chat, button, iframe { left: 24px !important; right: auto !important; }';
-              root.shadowRoot.appendChild(st);
-            }
-            var shadowEls = root.shadowRoot.querySelectorAll('*');
-            for (var s = 0; s < shadowEls.length; s++) {
-              moveNodeLeft(shadowEls[s]);
-            }
-          }
-
-          if (root.querySelectorAll) {
-            var all = root.querySelectorAll('*');
-            for (var k = 0; k < all.length; k++) {
-              moveNodeLeft(all[k]);
-              if (all[k].shadowRoot) scanTree(all[k]);
-            }
+        if (root.querySelectorAll) {
+          var all = root.querySelectorAll('*');
+          for (var k = 0; k < all.length; k++) {
+            moveNodeLeft(all[k]);
+            if (all[k].shadowRoot) scanTree(all[k]);
           }
         }
+      }
 
-        function relocateOnlyBotnoiChat() {
-          var targets = document.querySelectorAll(
-            '#bn-root, .bn-customerchat, [id^="bn-"], [class^="bn-"], [class*=" bn-"], botnoi-livechat'
-          );
-          for (var i = 0; i < targets.length; i++) {
-            scanTree(targets[i]);
-          }
-
-          var iframes = document.querySelectorAll('iframe[src*="console.botnoi.ai"]');
-          for (var j = 0; j < iframes.length; j++) {
-            moveNodeLeft(iframes[j]);
-            if (iframes[j].parentElement && iframes[j].parentElement !== document.body) {
-              moveNodeLeft(iframes[j].parentElement);
-            }
-          }
+      function relocateOnlyBotnoiChat() {
+        var targets = document.querySelectorAll(
+          '#bn-root, .bn-customerchat, [id^="bn-"], [class^="bn-"], [class*=" bn-"], botnoi-livechat'
+        );
+        for (var i = 0; i < targets.length; i++) {
+          scanTree(targets[i]);
         }
 
-        setInterval(relocateOnlyBotnoiChat, 600);
-      })();
-    </script>
-    <script>
-      (function (d, s, id) {
-        var js,
-          bjs = d.getElementsByTagName(s)[0];
-        if (d.getElementById(id)) return;
-        js = d.createElement(s);
-        js.id = id;
-        js.src = 'https://console.botnoi.ai/customerchat/index.js';
-        bjs.parentNode.insertBefore(js, bjs);
-      })(document, 'script', 'bn-jssdk');
-    </script>
-    <div
-      class="bn-customerchat"
-      bot_id="6af1990838450ceff91278ac"
-      bot_logo=""
-      bot_name="Plasom AI Assistant"
-      theme_color="#ea580c"
-      locale="th"
-      logged_in_greeting="สวัสดีค่ะ! น้อง Plasom ยินดีให้บริการ ปรึกษาอาการเสียหรือแจ้งซ่อมได้เลยนะคะ"
-      greeting_message="สวัสดีค่ะ แจ้งอาการเสียของอุปกรณ์ หรือพิมพ์รหัสติดตามงานซ่อมได้เลยค่ะ"
-      default_open="false"
-    ></div>
+        var iframes = document.querySelectorAll('iframe[src*="console.botnoi.ai"]');
+        for (var j = 0; j < iframes.length; j++) {
+          moveNodeLeft(iframes[j]);
+          if (iframes[j].parentElement && iframes[j].parentElement !== document.body) {
+            moveNodeLeft(iframes[j].parentElement);
+          }
+        }
+      }
 
-    <!-- =========================== -->
-    <!-- 2. WebAvatar 3D Realtime Widget (ยืนเด่นมุมขวาล่าง) -->
-    <!-- =========================== -->
-    <script>
-      window.ChatWidgetConfig = {
-        widgetId: "oq79iv10"
-      };
-      (function () {
-        if (document.getElementById("webavatar-jssdk")) return;
-        var s = document.createElement("script");
-        s.id = "webavatar-jssdk";
-        s.src = "https://webavatar.didthat.cc/chat-widget.js";
-        s.async = true;
-        (document.head || document.body).appendChild(s);
-      })();
-    </script>
-  </body>
+      setInterval(relocateOnlyBotnoiChat, 600);
+    })();
+  </script>
+  <script>
+    (function (d, s, id) {
+      var js,
+        bjs = d.getElementsByTagName(s)[0];
+      if (d.getElementById(id)) return;
+      js = d.createElement(s);
+      js.id = id;
+      js.src = 'https://console.botnoi.ai/customerchat/index.js';
+      bjs.parentNode.insertBefore(js, bjs);
+    })(document, 'script', 'bn-jssdk');
+  </script>
+  <div class="bn-customerchat" bot_id="6b057405dbe2f0a361cb1f55" bot_logo="" bot_name="Plasom Console Guide"
+    theme_color="#ea580c" locale="th"
+    logged_in_greeting="สวัสดีค่ะ! สนใจเปิดระบบจัดการงานซ่อมด้วย AI สำหรับร้านค้าของคุณ สอบถามฟีเจอร์ได้เลยนะคะ"
+    greeting_message="สวัสดีค่ะ สอบถามวิธีสร้างโปรเจกต์ร้านค้าและการเชื่อมต่อบอทบน Plasom Console ได้เลยค่ะ" default_open="false"></div>
+
+  <!-- =========================== -->
+  <!-- 2. WebAvatar 3D Realtime Widget (ยืนเด่นมุมขวาล่าง - ตัวใหม่ u0ep3phv) -->
+  <!-- =========================== -->
+  <script>
+    window.ChatWidgetConfig = {
+      widgetId: "u0ep3phv"
+    };
+    (function () {
+      if (document.getElementById('webavatar-jssdk')) return;
+      var script = document.createElement('script');
+      script.id = 'webavatar-jssdk';
+      script.src = 'https://webavatar.didthat.cc/chat-widget.js';
+      script.async = true;
+      (document.head || document.body).appendChild(script);
+    })();
+  </script>
+</body>
+
 </html>
