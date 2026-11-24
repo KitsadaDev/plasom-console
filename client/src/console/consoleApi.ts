@@ -273,14 +273,37 @@ export async function fetchProjectThreadsApi(projectId: string): Promise<ChatThr
 }
 
 // ==========================================
-// 3. Technicians API
+// 3. Technicians API (พร้อม Instant Cache)
 // ==========================================
+const TECH_CACHE_PREFIX = 'plasom_techs_cache_';
+
+export function readCachedTechnicians(projectId: string): any[] {
+  try {
+    const raw = localStorage.getItem(`${TECH_CACHE_PREFIX}${projectId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedTechnicians(projectId: string, list: any[]) {
+  try {
+    localStorage.setItem(`${TECH_CACHE_PREFIX}${projectId}`, JSON.stringify(list));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 export async function fetchProjectTechniciansApi(projectId: string): Promise<any[]> {
   const res = await api.get(`/projects/${projectId}/technicians`);
   const payload = res.data?.data;
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.technicians)) return payload.technicians;
-  return [];
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.technicians)
+    ? payload.technicians
+    : [];
+  writeCachedTechnicians(projectId, list);
+  return list;
 }
 
 export async function createProjectTechnicianApi(
@@ -288,7 +311,12 @@ export async function createProjectTechnicianApi(
   payload: { name: string; phone: string; area: string; specialty?: string | null }
 ) {
   const res = await api.post(`/projects/${projectId}/technicians`, payload);
-  return res.data?.data;
+  const created = res.data?.data;
+  if (created) {
+    const prev = readCachedTechnicians(projectId);
+    writeCachedTechnicians(projectId, [...prev, created]);
+  }
+  return created;
 }
 
 export async function updateProjectTechnicianApi(
@@ -303,13 +331,27 @@ export async function updateProjectTechnicianApi(
   }
 ) {
   const res = await api.patch(`/projects/${projectId}/technicians/${technicianId}`, payload);
-  return res.data?.data;
+  const updated = res.data?.data;
+  if (updated) {
+    const prev = readCachedTechnicians(projectId);
+    writeCachedTechnicians(
+      projectId,
+      prev.map((t: any) => (t.id === technicianId ? { ...t, ...updated } : t))
+    );
+  }
+  return updated;
 }
 
 export async function deleteProjectTechnicianApi(projectId: string, technicianId: string) {
   const res = await api.delete(`/projects/${projectId}/technicians/${technicianId}`);
+  const prev = readCachedTechnicians(projectId);
+  writeCachedTechnicians(
+    projectId,
+    prev.filter((t: any) => t.id !== technicianId)
+  );
   return res.data;
 }
+
 
 // ==========================================
 // 4. Reviews (CSAT) API

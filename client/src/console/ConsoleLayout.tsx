@@ -154,7 +154,8 @@ export function ConsoleLayout() {
     return () => {
       cancelled = true;
     };
-  }, [currentProject?.id, activeTab]);
+  }, [currentProject?.id]);
+
 
   if (loadingProjects && projects.length === 0) {
     return (
