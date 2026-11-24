@@ -5,6 +5,7 @@ import {
   deleteProjectTechnician,
   getProjectById,
   getProjectReviews,
+  getProjectTicketMessages,
   getProjects,
   getProjectTechnicians,
   getProjectTickets,
@@ -23,6 +24,7 @@ router.post("/", createProject);
 router.get("/:projectId", getProjectById);
 router.post("/:projectId/webhook-secret", rotateProjectWebhookSecret);
 router.get("/:projectId/tickets", getProjectTickets);
+router.get("/:projectId/tickets/:ticketId/messages", getProjectTicketMessages);
 router.patch("/:projectId/tickets/:ticketId", updateProjectTicket);
 router.get("/:projectId/technicians", getProjectTechnicians);
 router.post("/:projectId/technicians", createProjectTechnician);

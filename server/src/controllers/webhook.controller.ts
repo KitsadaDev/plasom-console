@@ -1,7 +1,67 @@
 import { Request, Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma";
 import { verifyProjectWebhookSecret } from "../lib/projectWebhook";
-import { createReviewWebhookSchema } from "../validations/project.validation";
+import {
+  createConversationWebhookSchema,
+  createReviewWebhookSchema,
+} from "../validations/project.validation";
+
+export async function createProjectConversationFromBotnoi(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const projectId = req.params.projectId;
+    const verified = await verifyProjectWebhookSecret(
+      projectId,
+      req.header("x-webhook-secret")
+    );
+    if (verified === null) {
+      res.status(404).json({ success: false, error: "ไม่พบร้านค้าที่ระบุ" });
+      return;
+    }
+    if (!verified) {
+      res.status(401).json({ success: false, error: "Webhook secret ไม่ถูกต้อง" });
+      return;
+    }
+
+    const data = createConversationWebhookSchema.parse(req.body);
+    const ticket = await prisma.ticket.findFirst({
+      where: { trackingCode: data.ticket, projectId },
+      select: { id: true },
+    });
+    if (!ticket) {
+      res.status(404).json({ success: false, error: "ไม่พบใบงานของร้านนี้" });
+      return;
+    }
+
+    const messages = await prisma.$transaction(
+      data.messages.map((message) =>
+        prisma.message.create({
+          data: {
+            ticketId: ticket.id,
+            text: message.text,
+            sender: message.sender,
+            fromStaff: false,
+            ...(message.timestamp ? { createdAt: new Date(message.timestamp) } : {}),
+          },
+          select: {
+            id: true,
+            text: true,
+            sender: true,
+            fromStaff: true,
+            createdAt: true,
+          },
+        })
+      )
+    );
+
+    res.status(201).json({ success: true, data: messages });
+  } catch (err) {
+    next(err);
+  }
+}
 
 export async function createProjectReviewFromBotnoi(
   req: Request,

@@ -59,4 +59,18 @@ export const createReviewWebhookSchema = z.object({
   comment: z.string().trim().max(2000).optional().default(""),
 });
 
+export const createConversationWebhookSchema = z.object({
+  ticket: z.string().trim().min(1).max(100),
+  messages: z
+    .array(
+      z.object({
+        sender: z.enum(["CUSTOMER", "BOT"]),
+        text: z.string().trim().min(1).max(2000),
+        timestamp: z.string().datetime({ offset: true }).optional(),
+      })
+    )
+    .min(1)
+    .max(100),
+});
+
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;

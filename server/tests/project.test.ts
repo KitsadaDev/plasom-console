@@ -4,12 +4,16 @@ import { createHash } from "crypto";
 import {
   createProject,
   createProjectTechnician,
+  getProjectTicketMessages,
   getProjectTickets,
   rotateProjectWebhookSecret,
   updateProjectTicket,
 } from "../src/controllers/project.controller";
 import { createProjectTicketFromBotnoi } from "../src/controllers/ticket.controller";
-import { createProjectReviewFromBotnoi } from "../src/controllers/webhook.controller";
+import {
+  createProjectConversationFromBotnoi,
+  createProjectReviewFromBotnoi,
+} from "../src/controllers/webhook.controller";
 import { mockRes, stubPrisma } from "./helpers";
 
 function nextSpy() {
@@ -79,6 +83,45 @@ test("getProjectTickets: ตรวจเจ้าของร้านและ�
     );
     assert.deepEqual(where, { projectId: "p1" });
     assert.equal(res.body.total, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("getProjectTicketMessages: ตรวจ ownership และดึงข้อความของใบงานในร้าน", async () => {
+  let ticketWhere: any;
+  let messageWhere: any;
+  const restore = stubPrisma({
+    project: { findFirst: async () => ({ id: "p1" }) },
+    ticket: {
+      findFirst: async ({ where }: any) => {
+        ticketWhere = where;
+        return { id: "t1" };
+      },
+    },
+    message: {
+      findMany: async ({ where }: any) => {
+        messageWhere = where;
+        return [{ id: "m1", text: "สวัสดี", sender: "BOT" }];
+      },
+    },
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await getProjectTicketMessages(
+      {
+        user: { id: "u1" },
+        params: { projectId: "p1", ticketId: "t1" },
+      } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.deepEqual(ticketWhere, { id: "t1", projectId: "p1" });
+    assert.deepEqual(messageWhere, { ticketId: "t1" });
+    assert.equal(res.body.data[0].sender, "BOT");
   } finally {
     restore();
   }
@@ -267,6 +310,61 @@ test("project webhook: ปฏิเสธ secret ที่ไม่ถูกต�
     assert.equal(res.statusCode, 401);
     assert.equal(ticketLookupCalled, false);
     assert.deepEqual(next.calls, []);
+  } finally {
+    restore();
+  }
+});
+
+test("conversation webhook: ตรวจ secret และบันทึกข้อความตามลำดับของใบงานในร้าน", async () => {
+  const secret = "conversation-webhook-secret";
+  const createdData: any[] = [];
+  const restore = stubPrisma({
+    project: {
+      findUnique: async () => ({
+        webhookSecretHash: createHash("sha256").update(secret).digest("hex"),
+      }),
+    },
+    ticket: {
+      findFirst: async ({ where }: any) =>
+        where.projectId === "p1" && where.trackingCode === "CC-20261124-ABCD"
+          ? { id: "ticket1" }
+          : null,
+    },
+    message: {
+      create: async ({ data }: any) => {
+        createdData.push(data);
+        return { id: `message${createdData.length}`, ...data };
+      },
+    },
+    $transaction: async (operations: Promise<unknown>[]) => Promise.all(operations),
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await createProjectConversationFromBotnoi(
+      {
+        params: { projectId: "p1" },
+        header: (name: string) => (name.toLowerCase() === "x-webhook-secret" ? secret : undefined),
+        body: {
+          ticket: "CC-20261124-ABCD",
+          messages: [
+            { sender: "CUSTOMER", text: "เครื่องมีเสียงดัง", timestamp: "2026-11-24T06:00:00.000Z" },
+            { sender: "BOT", text: "ขอทราบรุ่นอุปกรณ์เพิ่มเติมค่ะ" },
+          ],
+        },
+      } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.equal(res.statusCode, 201);
+    assert.equal(createdData.length, 2);
+    assert.equal(createdData[0].ticketId, "ticket1");
+    assert.equal(createdData[0].sender, "CUSTOMER");
+    assert.equal(createdData[0].fromStaff, false);
+    assert.equal(createdData[0].createdAt.toISOString(), "2026-11-24T06:00:00.000Z");
+    assert.equal(createdData[1].sender, "BOT");
   } finally {
     restore();
   }

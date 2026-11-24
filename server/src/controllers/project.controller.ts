@@ -211,6 +211,48 @@ export async function getProjectTickets(
   }
 }
 
+export async function getProjectTicketMessages(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ownerId = getOwnerId(req, res);
+    if (!ownerId) return;
+
+    const { projectId, ticketId } = req.params;
+    if (!(await findOwnedProject(projectId, ownerId))) {
+      res.status(404).json({ success: false, error: "ไม่พบร้านค้าในบัญชีนี้" });
+      return;
+    }
+
+    const ticket = await prisma.ticket.findFirst({
+      where: { id: ticketId, projectId },
+      select: { id: true },
+    });
+    if (!ticket) {
+      res.status(404).json({ success: false, error: "ไม่พบใบงานในร้านนี้" });
+      return;
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { ticketId: ticket.id },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        text: true,
+        sender: true,
+        fromStaff: true,
+        createdAt: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getProjectTechnicians(
   req: AuthRequest,
   res: Response,

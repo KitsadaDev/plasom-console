@@ -40,6 +40,12 @@ enum TechnicianStatus {
   BUSY
 }
 
+enum MessageSender {
+  CUSTOMER
+  BOT
+  STAFF
+}
+
 // ===========================
 // Models
 // ===========================
@@ -160,7 +166,8 @@ model StatusLog {
 model Message {
   id        String   @id @default(cuid())
   text      String
-  fromStaff Boolean  @default(false) // true = เจ้าหน้าที่, false = ลูกค้า
+  fromStaff Boolean  @default(false) // Legacy staff/customer flag
+  sender    MessageSender @default(CUSTOMER)
 
   ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   ticketId  String
