@@ -28,3 +28,26 @@ test("createTicketSchema: lat/lng ต้องอยู่ในช่วงท�
   assert.equal(createTicketSchema.safeParse({ ...base, lat: 0, lng: 0 }).success, true);
 });
 
+test("createTicketSchema: เก็บฟิลด์แจ้งซ่อม JSON แบบซ้อนและใส่ค่าเริ่มต้นเมื่อไม่ส่ง", () => {
+  const parsed = createTicketSchema.parse({
+    ...base,
+    extraFields: { รุ่นโซฟา: "M-2", รายละเอียด: { วัสดุ: "ผ้า", ตำแหน่ง: ["เบาะ", "พนักพิง"] } },
+  });
+  assert.deepEqual(parsed.extraFields, {
+    รุ่นโซฟา: "M-2",
+    รายละเอียด: { วัสดุ: "ผ้า", ตำแหน่ง: ["เบาะ", "พนักพิง"] },
+  });
+  assert.deepEqual(createTicketSchema.parse(base).extraFields, {});
+});
+
+test("createTicketSchema: จำกัดจำนวนและขนาดฟิลด์ JSON", () => {
+  const tooManyFields = Object.fromEntries(
+    Array.from({ length: 31 }, (_, index) => [`field_${index}`, "value"])
+  );
+  assert.equal(createTicketSchema.safeParse({ ...base, extraFields: tooManyFields }).success, false);
+  assert.equal(
+    createTicketSchema.safeParse({ ...base, extraFields: { details: "x".repeat(10_001) } }).success,
+    false
+  );
+});
+

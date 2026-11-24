@@ -1,6 +1,36 @@
 import { z } from "zod";
 import { ServiceType } from "@prisma/client";
 
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ])
+);
+
+export const ticketExtraFieldsSchema = z
+  .record(z.string().trim().min(1).max(100), jsonValueSchema)
+  .superRefine((fields, ctx) => {
+    if (Object.keys(fields).length > 30) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ข้อมูลเพิ่มเติมมีได้ไม่เกิน 30 ฟิลด์",
+      });
+    }
+    if (Buffer.byteLength(JSON.stringify(fields), "utf8") > 10_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ข้อมูลเพิ่มเติมมีขนาดใหญ่เกินไป",
+      });
+    }
+  });
+
 // ===========================
 // Regex เบอร์โทรไทย 10 หลัก (shared กับ auth.validation)
 // ===========================
@@ -36,6 +66,7 @@ export const createTicketSchema = z.object({
       return !isNaN(date.getTime()) && date >= today;
     }, "วันนัดต้องไม่เป็นวันที่ผ่านมาแล้ว"),
   note: z.string().max(1000).optional(),
+  extraFields: ticketExtraFieldsSchema.optional().default({}),
   customerName: z.string().min(2, "กรุณากรอกชื่อ-สกุล").max(100),
   customerPhone: thaiPhoneSchema,
 });

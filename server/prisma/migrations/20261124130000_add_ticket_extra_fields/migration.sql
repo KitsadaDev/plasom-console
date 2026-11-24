@@ -1,0 +1,2 @@
+ALTER TABLE "Ticket"
+ADD COLUMN "extraFields" JSONB NOT NULL DEFAULT '{}';
