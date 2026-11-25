@@ -1,12 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import { createHash, randomBytes } from "crypto";
-import { Prisma, TicketStatus } from "@prisma/client";
+import { Prisma, TechnicianStatus, TicketStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { AuthRequest } from "../middleware/auth";
 import {
   createProjectSchema,
   createTechnicianSchema,
   projectListQuerySchema,
+  updateProjectSchema,
   updateProjectTicketSchema,
   updateTechnicianSchema,
 } from "../validations/project.validation";
@@ -121,6 +122,175 @@ export async function getProjectById(
     }
 
     res.json({ success: true, data: project });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateProject(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ownerId = getOwnerId(req, res);
+    if (!ownerId) return;
+
+    const projectId = req.params.projectId;
+    const existing = await prisma.project.findFirst({
+      where: { id: projectId, ownerId },
+      select: { id: true, features: true },
+    });
+    if (!existing) {
+      res.status(404).json({ success: false, error: "ไม่พบร้านค้าในบัญชีนี้" });
+      return;
+    }
+
+    const data = updateProjectSchema.parse(req.body);
+    const updateData: Prisma.ProjectUpdateInput = {
+      ...(data.name !== undefined ? { name: data.name } : {}),
+      ...(data.category !== undefined ? { category: data.category } : {}),
+      ...(data.branchName !== undefined ? { branchName: data.branchName } : {}),
+      ...(data.chatbotConnected !== undefined ? { chatbotConnected: data.chatbotConnected } : {}),
+      ...(data.botnoiBotId !== undefined ? { botnoiBotId: data.botnoiBotId || null } : {}),
+      ...(data.voicebotConnected !== undefined ? { voicebotConnected: data.voicebotConnected } : {}),
+      ...(data.voiceAgentId !== undefined ? { voiceAgentId: data.voiceAgentId || null } : {}),
+      ...(data.greetingMessage !== undefined ? { greetingMessage: data.greetingMessage } : {}),
+      ...(data.requiredFields !== undefined ? { requiredFields: data.requiredFields } : {}),
+    };
+
+    if (data.features !== undefined) {
+      const currentFeatures =
+        existing.features && typeof existing.features === "object" && !Array.isArray(existing.features)
+          ? (existing.features as Record<string, unknown>)
+          : {};
+      updateData.features = {
+        ...currentFeatures,
+        ...data.features,
+      } as Prisma.InputJsonValue;
+    }
+
+    const updated = await prisma.project.update({
+      where: { id: projectId },
+      data: updateData,
+      select: projectSelect,
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteProject(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ownerId = getOwnerId(req, res);
+    if (!ownerId) return;
+
+    const deleted = await prisma.project.deleteMany({
+      where: { id: req.params.projectId, ownerId },
+    });
+    if (!deleted.count) {
+      res.status(404).json({ success: false, error: "ไม่พบร้านค้าในบัญชีนี้" });
+      return;
+    }
+
+    res.json({ success: true, message: "ลบร้านค้าเรียบร้อยแล้ว" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getProjectSummary(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ownerId = getOwnerId(req, res);
+    if (!ownerId) return;
+
+    const projectId = req.params.projectId;
+    if (!(await findOwnedProject(projectId, ownerId))) {
+      res.status(404).json({ success: false, error: "ไม่พบร้านค้าในบัญชีนี้" });
+      return;
+    }
+
+    const [ticketGroups, technicianGroups, reviewAggregate] = await Promise.all([
+      prisma.ticket.groupBy({
+        by: ["status"],
+        where: { projectId },
+        _count: { _all: true },
+      }),
+      prisma.technician.groupBy({
+        by: ["status"],
+        where: { projectId },
+        _count: { _all: true },
+      }),
+      prisma.review.aggregate({
+        where: { projectId },
+        _avg: { rating: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const byStatus: Record<TicketStatus, number> = {
+      [TicketStatus.SUBMITTED]: 0,
+      [TicketStatus.RECEIVED]: 0,
+      [TicketStatus.IN_PROGRESS]: 0,
+      [TicketStatus.COMPLETED]: 0,
+      [TicketStatus.CANCELLED]: 0,
+    };
+    let ticketTotal = 0;
+    for (const row of ticketGroups) {
+      const count = row._count._all;
+      byStatus[row.status] = count;
+      ticketTotal += count;
+    }
+
+    let techTotal = 0;
+    let techAvailable = 0;
+    let techBusy = 0;
+    for (const row of technicianGroups) {
+      const count = row._count._all;
+      techTotal += count;
+      if (row.status === TechnicianStatus.AVAILABLE) techAvailable = count;
+      if (row.status === TechnicianStatus.BUSY) techBusy = count;
+    }
+
+    const rawAvg = reviewAggregate._avg.rating;
+    const averageRating =
+      typeof rawAvg === "number" && Number.isFinite(rawAvg)
+        ? Math.round(rawAvg * 100) / 100
+        : 0;
+
+    res.json({
+      success: true,
+      data: {
+        projectId,
+        tickets: {
+          total: ticketTotal,
+          pending: byStatus[TicketStatus.SUBMITTED] + byStatus[TicketStatus.RECEIVED],
+          inProgress: byStatus[TicketStatus.IN_PROGRESS],
+          completed: byStatus[TicketStatus.COMPLETED],
+          cancelled: byStatus[TicketStatus.CANCELLED],
+          byStatus,
+        },
+        technicians: {
+          total: techTotal,
+          available: techAvailable,
+          busy: techBusy,
+        },
+        reviews: {
+          total: reviewAggregate._count._all,
+          averageRating,
+        },
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -415,6 +585,8 @@ export async function updateProjectTicket(
       }
     }
 
+    const resolvedBrand = data.brand ?? data.subject;
+
     const updatedTicket = await prisma.$transaction(async (tx) => {
       const status = data.status ?? current.status;
       if (status !== current.status || data.note) {
@@ -426,8 +598,21 @@ export async function updateProjectTicket(
       return tx.ticket.update({
         where: { id: ticketId },
         data: {
-          ...(data.status ? { status: data.status } : {}),
+          ...(data.status !== undefined ? { status: data.status } : {}),
           ...(data.technicianId !== undefined ? { technicianId: data.technicianId } : {}),
+          ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
+          ...(data.customerPhone !== undefined ? { customerPhone: data.customerPhone } : {}),
+          ...(data.service !== undefined ? { service: data.service } : {}),
+          ...(resolvedBrand !== undefined ? { brand: resolvedBrand } : {}),
+          ...(data.symptom !== undefined ? { symptom: data.symptom } : {}),
+          ...(data.address !== undefined ? { address: data.address } : {}),
+          ...(data.preferredDate !== undefined
+            ? { preferredDate: new Date(data.preferredDate) }
+            : {}),
+          ...(data.note !== undefined ? { note: data.note } : {}),
+          ...(data.extraFields !== undefined
+            ? { extraFields: data.extraFields as Prisma.InputJsonValue }
+            : {}),
         },
         include: {
           technician: { select: { id: true, name: true, phone: true, area: true, specialty: true } },

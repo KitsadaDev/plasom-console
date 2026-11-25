@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { TicketStatus, TechnicianStatus } from "@prisma/client";
+import { ServiceType, TicketStatus, TechnicianStatus } from "@prisma/client";
+import { thaiPhoneSchema, ticketExtraFieldsSchema } from "./ticket.validation";
 
 export const projectFeaturesSchema = z.object({
   createTicket: z.boolean(),
@@ -30,6 +31,19 @@ export const createProjectSchema = z.object({
   }),
 });
 
+export const updateProjectSchema = z.object({
+  name: z.string().trim().min(2, "กรุณากรอกชื่อร้าน").max(100).optional(),
+  category: z.string().trim().min(2, "กรุณาเลือกหมวดหมู่").max(100).optional(),
+  branchName: z.string().trim().min(1, "กรุณากรอกชื่อสาขา").max(100).optional(),
+  chatbotConnected: z.boolean().optional(),
+  botnoiBotId: z.string().trim().max(200).optional().nullable(),
+  voicebotConnected: z.boolean().optional(),
+  voiceAgentId: z.string().trim().max(200).optional().nullable(),
+  greetingMessage: z.string().max(2000).optional(),
+  requiredFields: z.array(z.string().trim().min(1).max(100)).max(30).optional(),
+  features: projectFeaturesSchema.partial().optional(),
+});
+
 export const projectListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional().default(1),
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
@@ -50,6 +64,18 @@ export const updateProjectTicketSchema = z.object({
   status: z.nativeEnum(TicketStatus).optional(),
   technicianId: z.string().nullable().optional(),
   note: z.string().trim().max(500).optional(),
+  customerName: z.string().trim().min(2, "กรุณากรอกชื่อลูกค้า").max(100).optional(),
+  customerPhone: thaiPhoneSchema.optional(),
+  service: z.nativeEnum(ServiceType).optional(),
+  brand: z.string().trim().min(1, "กรุณากรอกหัวข้อหรือรุ่นอุปกรณ์").max(100).optional(),
+  subject: z.string().trim().min(1, "กรุณากรอกหัวข้อหรือรุ่นอุปกรณ์").max(100).optional(),
+  symptom: z.string().trim().min(1, "กรุณากรอกอาการเสีย").max(500).optional(),
+  address: z.string().trim().min(1, "กรุณากรอกที่อยู่").max(500).optional(),
+  preferredDate: z
+    .string()
+    .refine((val) => !Number.isNaN(new Date(val).getTime()), "รูปแบบวันนัดหมายไม่ถูกต้อง")
+    .optional(),
+  extraFields: ticketExtraFieldsSchema.optional(),
 });
 
 export const createReviewWebhookSchema = z.object({
@@ -74,3 +100,5 @@ export const createConversationWebhookSchema = z.object({
 });
 
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
+export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
+export type UpdateProjectTicketInput = z.infer<typeof updateProjectTicketSchema>;

@@ -4,9 +4,12 @@ import { createHash } from "crypto";
 import {
   createProject,
   createProjectTechnician,
+  deleteProject,
+  getProjectSummary,
   getProjectTicketMessages,
   getProjectTickets,
   rotateProjectWebhookSecret,
+  updateProject,
   updateProjectTicket,
 } from "../src/controllers/project.controller";
 import { createProjectTicketFromBotnoi } from "../src/controllers/ticket.controller";
@@ -458,6 +461,248 @@ test("review webhook: ปฏิเสธรีวิวก่อนใบงา�
     assert.deepEqual(next.calls, []);
     assert.equal(res.statusCode, 409);
     assert.equal(reviewLookupCalled, false);
+  } finally {
+    restore();
+  }
+});
+
+test("updateProject: แก้ไขตั้งค่าร้านค้า รหัสบอท ข้อความทักทาย ฟิลด์แจ้งซ่อม และ merge features", async () => {
+  let updatedData: any;
+  const restore = stubPrisma({
+    project: {
+      findFirst: async () => ({
+        id: "p1",
+        features: {
+          createTicket: true,
+          trackStatus: true,
+          priceEstimate: false,
+          faqAutoReply: true,
+          collectCsat: true,
+          humanHandover: false,
+        },
+      }),
+      update: async ({ data }: any) => {
+        updatedData = data;
+        return { id: "p1", ownerId: "u1", ...data };
+      },
+    },
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await updateProject(
+      {
+        user: { id: "u1" },
+        params: { projectId: "p1" },
+        body: {
+          name: "ร้านแอร์ใหม่",
+          botnoiBotId: "bot-999",
+          voiceAgentId: "",
+          greetingMessage: "สวัสดีลูกค้าใหม่ครับ",
+          requiredFields: ["ยี่ห้อแอร์", "อาการเสีย", "เบอร์โทร"],
+          features: { priceEstimate: true },
+        },
+      } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.equal(res.statusCode, 200);
+    assert.equal(updatedData.name, "ร้านแอร์ใหม่");
+    assert.equal(updatedData.botnoiBotId, "bot-999");
+    assert.equal(updatedData.voiceAgentId, null);
+    assert.equal(updatedData.greetingMessage, "สวัสดีลูกค้าใหม่ครับ");
+    assert.deepEqual(updatedData.requiredFields, ["ยี่ห้อแอร์", "อาการเสีย", "เบอร์โทร"]);
+    assert.equal(updatedData.features.priceEstimate, true);
+    assert.equal(updatedData.features.createTicket, true);
+  } finally {
+    restore();
+  }
+});
+
+test("updateProject: คืน 404 เมื่อไม่ใช่เจ้าของร้าน", async () => {
+  let updateCalled = false;
+  const restore = stubPrisma({
+    project: {
+      findFirst: async () => null,
+      update: async () => {
+        updateCalled = true;
+      },
+    },
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await updateProject(
+      { user: { id: "u2" }, params: { projectId: "p1" }, body: { name: "แฮ็กร้าน" } } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.equal(res.statusCode, 404);
+    assert.equal(updateCalled, false);
+  } finally {
+    restore();
+  }
+});
+
+test("deleteProject: ลบร้านค้าในบัญชีเจ้าของและคืน 404 หากไม่พบ", async () => {
+  let deleteWhere: any;
+  const restore = stubPrisma({
+    project: {
+      deleteMany: async ({ where }: any) => {
+        deleteWhere = where;
+        return { count: where.ownerId === "u1" ? 1 : 0 };
+      },
+    },
+  });
+  try {
+    const okRes = mockRes();
+    const next1 = nextSpy();
+    await deleteProject(
+      { user: { id: "u1" }, params: { projectId: "p1" } } as any,
+      okRes,
+      next1 as any
+    );
+    assert.deepEqual(next1.calls, []);
+    assert.deepEqual(deleteWhere, { id: "p1", ownerId: "u1" });
+    assert.equal(okRes.statusCode, 200);
+    assert.equal(okRes.body.success, true);
+
+    const notFoundRes = mockRes();
+    const next2 = nextSpy();
+    await deleteProject(
+      { user: { id: "u2" }, params: { projectId: "p1" } } as any,
+      notFoundRes,
+      next2 as any
+    );
+    assert.deepEqual(next2.calls, []);
+    assert.equal(notFoundRes.statusCode, 404);
+  } finally {
+    restore();
+  }
+});
+
+test("getProjectSummary: สรุปจำนวนใบงาน ช่าง และค่าเฉลี่ยดาวแบบ aggregate ในครั้งเดียว", async () => {
+  const restore = stubPrisma({
+    project: { findFirst: async () => ({ id: "p1" }) },
+    ticket: {
+      groupBy: async () => [
+        { status: "SUBMITTED", _count: { _all: 3 } },
+        { status: "RECEIVED", _count: { _all: 2 } },
+        { status: "IN_PROGRESS", _count: { _all: 4 } },
+        { status: "COMPLETED", _count: { _all: 5 } },
+        { status: "CANCELLED", _count: { _all: 1 } },
+      ],
+    },
+    technician: {
+      groupBy: async () => [
+        { status: "AVAILABLE", _count: { _all: 3 } },
+        { status: "BUSY", _count: { _all: 2 } },
+      ],
+    },
+    review: {
+      aggregate: async () => ({
+        _avg: { rating: 4.6666667 },
+        _count: { _all: 6 },
+      }),
+    },
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await getProjectSummary(
+      { user: { id: "u1" }, params: { projectId: "p1" } } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.body.data, {
+      projectId: "p1",
+      tickets: {
+        total: 15,
+        pending: 5,
+        inProgress: 4,
+        completed: 5,
+        cancelled: 1,
+        byStatus: {
+          SUBMITTED: 3,
+          RECEIVED: 2,
+          IN_PROGRESS: 4,
+          COMPLETED: 5,
+          CANCELLED: 1,
+        },
+      },
+      technicians: {
+        total: 5,
+        available: 3,
+        busy: 2,
+      },
+      reviews: {
+        total: 6,
+        averageRating: 4.67,
+      },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("updateProjectTicket: แก้ไขข้อมูลลูกค้า หัวข้อ อาการเสีย ที่อยู่ และวันนัดหมายได้", async () => {
+  let ticketUpdateData: any;
+  let statusLogCreated = false;
+  const restore = stubPrisma({
+    project: { findFirst: async () => ({ id: "p1" }) },
+    ticket: { findFirst: async () => ({ id: "t1", status: "SUBMITTED" }) },
+    $transaction: async (callback: any) =>
+      callback({
+        statusLog: {
+          create: async () => {
+            statusLogCreated = true;
+            return {};
+          },
+        },
+        ticket: {
+          update: async ({ data }: any) => {
+            ticketUpdateData = data;
+            return { id: "t1", ...data };
+          },
+        },
+      }),
+  });
+  try {
+    const res = mockRes();
+    const next = nextSpy();
+    await updateProjectTicket(
+      {
+        user: { id: "u1" },
+        params: { projectId: "p1", ticketId: "t1" },
+        body: {
+          customerName: "คุณสมหญิง ใจดี",
+          customerPhone: "0891234567",
+          subject: "ล้างแอร์ Daikin Inverter",
+          symptom: "แอร์ไม่เย็นและมีเสียงดัง",
+          address: "99/1 ถ.พระราม 2 กรุงเทพฯ",
+          preferredDate: "2026-12-01T10:00:00.000Z",
+        },
+      } as any,
+      res,
+      next as any
+    );
+
+    assert.deepEqual(next.calls, []);
+    assert.equal(res.statusCode, 200);
+    assert.equal(statusLogCreated, false);
+    assert.equal(ticketUpdateData.customerName, "คุณสมหญิง ใจดี");
+    assert.equal(ticketUpdateData.customerPhone, "0891234567");
+    assert.equal(ticketUpdateData.brand, "ล้างแอร์ Daikin Inverter");
+    assert.equal(ticketUpdateData.symptom, "แอร์ไม่เย็นและมีเสียงดัง");
+    assert.equal(ticketUpdateData.address, "99/1 ถ.พระราม 2 กรุงเทพฯ");
+    assert.equal(ticketUpdateData.preferredDate.toISOString(), "2026-12-01T10:00:00.000Z");
   } finally {
     restore();
   }
